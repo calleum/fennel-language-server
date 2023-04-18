@@ -108,9 +108,9 @@ pub(crate) fn error(e: ErrorKind) -> (String, DiagnosticSeverity) {
         ErrorKind::Dismatched => {
             ("Closing delimiter is missing".into(), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::Undefined => {
-            ("Undefined identifier".into(), DiagnosticSeverity::ERROR)
-        }
+        ErrorKind::Undefined(iden)=> (
+            format!("Undefined identifier: {}", iden), DiagnosticSeverity::ERROR
+        ),
         ErrorKind::Unused => {
             ("Unused identifier".into(), DiagnosticSeverity::HINT)
         }

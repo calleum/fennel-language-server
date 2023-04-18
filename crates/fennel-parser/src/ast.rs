@@ -463,13 +463,15 @@ impl Ast {
             })
             .filter_map(|r_symbol| {
                 let text = r_symbol.token.text.as_str();
+                ;
                 if self.globals.contains(text)
                     || Vec::from(include!("static/compiler-macro"))
                         .contains(&text)
                 {
                     None
                 } else {
-                    Some(Error::new(r_symbol.token.range, Undefined))
+                    Some(Error::new(r_symbol.token.range, Undefined(text.to_string()
+                    )))
                 }
             })
             .collect()
@@ -540,7 +542,7 @@ impl Ast {
                         e.kind == Unexpected(*kind)
                     }
                     SuppressErrorKind::Undefined => {
-                        matches!(e.kind, Undefined)
+                        matches!(e.kind, Undefined(..))
                     }
                     SuppressErrorKind::Unused => matches!(e.kind, Unused),
                 })
@@ -754,7 +756,8 @@ mod tests {
         let text = "(x) (fn x [] (+))";
         let mut ast = parse(text.chars(), HashSet::new());
         assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), vec![
-            &Error::new(TextRange::new(1.into(), 2.into()), Undefined)
+            &Error::new(TextRange::new(1.into(), 2.into()), Undefined("x".to_string()
+            ))
         ],);
         ast.update_globals(vec!["x".to_owned()]);
         assert_eq!(
@@ -768,7 +771,7 @@ mod tests {
         let text = "(fn x.a [] (+))(fn x [] (+))";
         let ast = parse(text.chars(), HashSet::new());
         assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), vec![
-            &Error::new(TextRange::new(4.into(), 5.into()), Undefined)
+            &Error::new(TextRange::new(4.into(), 5.into()), Undefined("a".to_string()))
         ],);
     }
 
@@ -778,7 +781,7 @@ mod tests {
         let ast = parse(text.chars(), HashSet::new());
         assert_eq!(ast.errors().collect::<Vec<&Error>>(), vec![&Error::new(
             TextRange::new(8.into(), 11.into()),
-            Undefined
+            Undefined("name".to_string())
         )],);
     }
 
@@ -992,7 +995,7 @@ mod tests {
             parse(text.chars(), HashSet::new())
                 .errors()
                 .collect::<Vec<&Error>>(),
-            vec![&Error::new(TextRange::new(5.into(), 6.into()), Undefined,),]
+            vec![&Error::new(TextRange::new(5.into(), 6.into()), Undefined("x".to_string())),]
         )
     }
 

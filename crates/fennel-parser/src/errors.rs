@@ -11,7 +11,7 @@ pub enum ErrorKind {
     EmptyList,
     Dismatched,
     Unterminated(SyntaxKind),
-    Undefined,
+    Undefined(String),
     Unused,
     GlobalConflict,
     MissingWhitespace,
