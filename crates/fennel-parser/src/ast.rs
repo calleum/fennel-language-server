@@ -618,7 +618,7 @@ mod tests {
     impl Ast {
         fn filtered_errors(&self) -> impl Iterator<Item = &Error> {
             self.errors()
-                .filter(|e| !matches!(e.kind, ErrorKind::Depcrated(..)))
+                .filter(|e| !matches!(e.kind, ErrorKind::Deprecated(..)))
         }
     }
 
@@ -983,7 +983,7 @@ mod tests {
             parse(text.chars(), HashSet::new()).errors().next().unwrap(),
             &Error::new(
                 TextRange::new(1.into(), 7.into()),
-                Depcrated("1.1.0", "_G table"),
+                Deprecated("1.1.0", "_G table"),
             ),
         );
     }
