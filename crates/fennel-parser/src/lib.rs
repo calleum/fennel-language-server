@@ -37,3 +37,24 @@ pub fn parse(
     let parsed = parser::Parser::new(Box::new(text)).parse();
     ast::Ast::new(parsed.green_node, parsed.errors, globals)
 }
+
+#[test]
+fn learn_cst_structure() {
+    let code = "(local x 10) (+ x 5)"; // This is your "small file"
+    let globals = std::collections::HashSet::new();
+
+    // Parse the string into your Ast
+    let ast = parse(code.chars(), globals);
+    // Get the Rowan Root Node
+    let root = SyntaxNode::new_root(ast.root.clone());
+
+    // Iterate through every single piece of the syntax tree
+    for node in root.descendants() {
+        println!(
+            "Kind: {:?}, Range: {:?}, Text: '{}'",
+            node.kind(),
+            node.text_range(),
+            node.text()
+        );
+    }
+}

@@ -135,6 +135,19 @@ impl tower_lsp::LanguageServer for Backend {
         }
     }
 
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let _ast =
+            self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let _doc =
+            self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+
+        Err(Error::method_not_found())
+    }
+
     async fn references(
         &self,
         params: ReferenceParams,

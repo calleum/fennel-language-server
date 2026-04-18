@@ -307,7 +307,7 @@ impl KvTable {
                     .first_child()
                     .and_then(eval::EvalAst::cast)
                     .and_then(|n| n.cast_string());
-                if k_str.map_or(false, |(s, _)| s == key) {
+                if k_str.is_some_and(|(s, _)| s == key) {
                     value_node
                         .and_then(|v| v.first_child())
                         .and_then(EvalAst::cast)

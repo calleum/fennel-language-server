@@ -734,7 +734,7 @@ impl<'p> Parser<'p> {
     fn expand(
         &mut self,
         cur_token: Token,
-        rules: impl Iterator<Item = Rule> + DoubleEndedIterator,
+        rules: impl DoubleEndedIterator<Item = Rule>,
     ) {
         let cur_rule = self.rule_stack.pop().unwrap();
         if let Some(r) = cur_rule.expand() {
@@ -897,7 +897,7 @@ impl<'p> Parser<'p> {
             .rposition(|x| {
                 if let Rule { expect: kind, notation: Close(_) } = x {
                     total += 1;
-                    kinds.contains(&kind)
+                    kinds.contains(kind)
                 } else {
                     false
                 }

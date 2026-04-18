@@ -238,7 +238,7 @@ impl Literal {
         if s.ends_with('.') || s.ends_with('/') {
             return None;
         }
-        let s = s.trim_start_matches(|c| c == '.' || c == '/');
+        let s = s.trim_start_matches(['.', '/']);
         let path = PathBuf::from(s.replace('.', "/"));
         Some(path)
     }

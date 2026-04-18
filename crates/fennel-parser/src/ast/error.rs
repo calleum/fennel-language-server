@@ -334,7 +334,7 @@ impl FuncAst {
             .iter()
             .filter_map(|(k, v)| {
                 if k.and_then(|k| k.cast_string())
-                    .map_or(false, |(s, _)| s == "fnl/arglist")
+                    .is_some_and(|(s, _)| s == "fnl/arglist")
                 {
                     v.map(|args| {
                         (
