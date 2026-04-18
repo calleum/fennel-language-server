@@ -1,0 +1,30 @@
+# prek configuration matching GitHub Actions
+# See: https://github.com/j178/prek
+
+fail_fast = false
+
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "trailing-whitespace" },
+    { id = "end-of-file-fixer" },
+    { id = "check-yaml" },
+    { id = "check-toml" },
+    { id = "check-merge-conflict" },
+    { id = "check-added-large-files" },
+]
+
+[[repos]]
+repo = "https://github.com/doublify/pre-commit-rust"
+rev = "v1.0"
+hooks = [
+    { id = "fmt", args = ["--all", "--", "--check"] },
+    { id = "clippy", args = ["--all-targets", "--all-features", "--", "-D", "warnings"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "cargo-build", name = "cargo build", entry = "cargo build --verbose", language = "system", types = ["rust"], pass_filenames = false },
+    { id = "cargo-test", name = "cargo test", entry = "cargo test --verbose", language = "system", types = ["rust"], pass_filenames = false },
+]

@@ -67,8 +67,8 @@ Features are partially completed:
 - [x] `Goto Definition`
 - [x] `Code Completion`
 - [x] `References`
-- [x] `Hover` 
-- [x] `Rename` 
+- [x] `Hover`
+- [x] `Rename`
 - [ ] `Formatter`
 
 **All features don't work properly on multi-symbols.**
