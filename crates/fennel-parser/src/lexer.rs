@@ -1,6 +1,5 @@
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, sync::LazyLock};
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::syntax::SyntaxKind;
@@ -41,7 +40,7 @@ impl<'a> Lexer<'a> {
     }
 }
 
-static TABLE: Lazy<HashMap<String, SyntaxKind>> = Lazy::new(|| {
+static TABLE: LazyLock<HashMap<String, SyntaxKind>> = LazyLock::new(|| {
     let mut table: HashMap<String, SyntaxKind> = HashMap::new();
     crate::syntax::TOEKN.iter().for_each(|(t, s)| {
         table.insert(t.to_string(), *s);
@@ -49,7 +48,7 @@ static TABLE: Lazy<HashMap<String, SyntaxKind>> = Lazy::new(|| {
     table
 });
 
-static RE_FLOAT: Lazy<Regex> = Lazy::new(|| {
+static RE_FLOAT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         "^({}|{}|{})({})?$",
         r"[+-]?(0x)?\.[0-9][0-9_]*",
@@ -62,14 +61,14 @@ static RE_FLOAT: Lazy<Regex> = Lazy::new(|| {
 
 const BOUND: [char; 8] = ['(', ')', '[', ']', '{', '}', ',', '`'];
 
-static RE_INTEGER: Lazy<Regex> = Lazy::new(|| {
+static RE_INTEGER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!("^{}$", r#"[+-]?(0x)?[0-9][0-9_]*"#)).unwrap()
 });
 
-static RE_COLON_STRING: Lazy<Regex> =
-    Lazy::new(|| Regex::new(&format!("^{}$", r#":[^"'~;@]+"#)).unwrap());
+static RE_COLON_STRING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("^{}$", r#":[^"'~;@]+"#)).unwrap());
 
-static RE_SYMBOL: Lazy<Regex> = Lazy::new(|| {
+static RE_SYMBOL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!("^{}$", r#"[^.:#"'~;,@`&][^"'~;,@`&]*"#)).unwrap()
 });
 
@@ -296,12 +295,15 @@ mod tests {
 
     #[test]
     fn number() {
-        assert_lex("+123 1.23 -1_._2__3E2_ .1", &[
-            Token::new(SyntaxKind::INTEGER, "+123", 0..4),
-            Token::new(SyntaxKind::FLOAT, "1.23", 5..9),
-            Token::new(SyntaxKind::FLOAT, "-1_._2__3E2_", 10..22),
-            Token::new(SyntaxKind::FLOAT, ".1", 23..25),
-        ]);
+        assert_lex(
+            "+123 1.23 -1_._2__3E2_ .1",
+            &[
+                Token::new(SyntaxKind::INTEGER, "+123", 0..4),
+                Token::new(SyntaxKind::FLOAT, "1.23", 5..9),
+                Token::new(SyntaxKind::FLOAT, "-1_._2__3E2_", 10..22),
+                Token::new(SyntaxKind::FLOAT, ".1", 23..25),
+            ],
+        );
     }
 
     #[ignore = "FIXME"]
@@ -334,42 +336,52 @@ mod tests {
 
     #[test]
     fn list() {
-        assert_lex("(-> false (not) (#$) ((fn [x] (# x))))", &[
-            Token::new(SyntaxKind::L_PAREN, "(", 0..1),
-            Token::new(SyntaxKind::THREAD, "->", 1..3),
-            Token::new(SyntaxKind::BOOL, "false", 4..9),
-            Token::new(SyntaxKind::L_PAREN, "(", 10..11),
-            Token::new(SyntaxKind::OPERATOR, "not", 11..14),
-            Token::new(SyntaxKind::R_PAREN, ")", 14..15),
-            Token::new(SyntaxKind::L_PAREN, "(", 16..17),
-            Token::new(SyntaxKind::HASHFN, "#", 17..18),
-            Token::new(SyntaxKind::SYMBOL, "$", 18..19),
-            Token::new(SyntaxKind::R_PAREN, ")", 19..20),
-            Token::new(SyntaxKind::L_PAREN, "(", 21..22),
-            Token::new(SyntaxKind::L_PAREN, "(", 22..23),
-            Token::new(SyntaxKind::KEYWORD_FN, "fn", 23..25),
-            Token::new(SyntaxKind::L_BRACKET, "[", 26..27),
-            Token::new(SyntaxKind::SYMBOL, "x", 27..28),
-            Token::new(SyntaxKind::R_BRACKET, "]", 28..29),
-            Token::new(SyntaxKind::L_PAREN, "(", 30..31),
-            Token::new(SyntaxKind::LENGTH, "#", 31..32),
-            Token::new(SyntaxKind::SYMBOL, "x", 33..34),
-            Token::new(SyntaxKind::R_PAREN, ")", 34..35),
-            Token::new(SyntaxKind::R_PAREN, ")", 35..36),
-            Token::new(SyntaxKind::R_PAREN, ")", 36..37),
-            Token::new(SyntaxKind::R_PAREN, ")", 37..38),
-        ]);
+        assert_lex(
+            "(-> false (not) (#$) ((fn [x] (# x))))",
+            &[
+                Token::new(SyntaxKind::L_PAREN, "(", 0..1),
+                Token::new(SyntaxKind::THREAD, "->", 1..3),
+                Token::new(SyntaxKind::BOOL, "false", 4..9),
+                Token::new(SyntaxKind::L_PAREN, "(", 10..11),
+                Token::new(SyntaxKind::OPERATOR, "not", 11..14),
+                Token::new(SyntaxKind::R_PAREN, ")", 14..15),
+                Token::new(SyntaxKind::L_PAREN, "(", 16..17),
+                Token::new(SyntaxKind::HASHFN, "#", 17..18),
+                Token::new(SyntaxKind::SYMBOL, "$", 18..19),
+                Token::new(SyntaxKind::R_PAREN, ")", 19..20),
+                Token::new(SyntaxKind::L_PAREN, "(", 21..22),
+                Token::new(SyntaxKind::L_PAREN, "(", 22..23),
+                Token::new(SyntaxKind::KEYWORD_FN, "fn", 23..25),
+                Token::new(SyntaxKind::L_BRACKET, "[", 26..27),
+                Token::new(SyntaxKind::SYMBOL, "x", 27..28),
+                Token::new(SyntaxKind::R_BRACKET, "]", 28..29),
+                Token::new(SyntaxKind::L_PAREN, "(", 30..31),
+                Token::new(SyntaxKind::LENGTH, "#", 31..32),
+                Token::new(SyntaxKind::SYMBOL, "x", 33..34),
+                Token::new(SyntaxKind::R_PAREN, ")", 34..35),
+                Token::new(SyntaxKind::R_PAREN, ")", 35..36),
+                Token::new(SyntaxKind::R_PAREN, ")", 36..37),
+                Token::new(SyntaxKind::R_PAREN, ")", 37..38),
+            ],
+        );
     }
 
     #[test]
     fn comment() {
-        assert_lex("(print :logos; this is comment)\n\n)", &[
-            Token::new(SyntaxKind::L_PAREN, "(", 0..1),
-            Token::new(SyntaxKind::SYMBOL, "print", 1..6),
-            Token::new(SyntaxKind::COLON_STRING, ":logos", 7..13),
-            Token::new(SyntaxKind::COMMENT, "; this is comment)\n", 13..32),
-            Token::new(SyntaxKind::R_PAREN, ")", 33..34),
-        ]);
+        assert_lex(
+            "(print :logos; this is comment)\n\n)",
+            &[
+                Token::new(SyntaxKind::L_PAREN, "(", 0..1),
+                Token::new(SyntaxKind::SYMBOL, "print", 1..6),
+                Token::new(SyntaxKind::COLON_STRING, ":logos", 7..13),
+                Token::new(
+                    SyntaxKind::COMMENT,
+                    "; this is comment)\n",
+                    13..32,
+                ),
+                Token::new(SyntaxKind::R_PAREN, ")", 33..34),
+            ],
+        );
     }
 
     #[test]

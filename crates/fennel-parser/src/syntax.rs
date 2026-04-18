@@ -409,6 +409,7 @@ pub(crate) const TOEKN: &[(&str, SyntaxKind)] = &[
 
 impl From<u16> for SyntaxKind {
     #[inline]
+    #[allow(unsafe_code)]
     fn from(d: u16) -> Self {
         assert!(d <= (Self::ROOT as u16));
         unsafe { std::mem::transmute::<u16, Self>(d) }

@@ -1,4 +1,5 @@
 name: Security Audit
+
 on:
   schedule:
     - cron: '0 0 * * *'
@@ -6,13 +7,16 @@ on:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
-      - '**/audit.toml'
+
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
-      - uses: actions-rs/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/checkout@v4
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run cargo audit
+        run: cargo audit

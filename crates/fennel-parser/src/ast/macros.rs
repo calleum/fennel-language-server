@@ -57,5 +57,3 @@ macro_rules! ast_assoc {
         }
     }
 }
-
-pub(crate) use ast_assoc;

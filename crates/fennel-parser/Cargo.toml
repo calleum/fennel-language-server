@@ -1,9 +1,12 @@
 [package]
 name = "fennel-parser"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
-once_cell = "1.17.0"
-regex = { version = "1.7.1", default-features = false, features = ["std"] }
-rowan = "0.15.10"
+regex = { workspace = true }
+rowan = { workspace = true }
+thiserror = { workspace = true }

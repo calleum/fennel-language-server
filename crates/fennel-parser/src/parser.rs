@@ -897,7 +897,7 @@ impl<'p> Parser<'p> {
             .rposition(|x| {
                 if let Rule { expect: kind, notation: Close(_) } = x {
                     total += 1;
-                    kinds.contains(kind)
+                    kinds.contains(&kind)
                 } else {
                     false
                 }
@@ -941,17 +941,29 @@ mod tests {
     fn symbol_error() {
         let text = "x. x:";
         let parser = Parser::new(text.chars());
-        assert_eq!(parser.parse().errors, vec![
-            Error::new(TextRange::new(1.into(), 2.into()), InvalidSymbol),
-            Error::new(TextRange::new(4.into(), 5.into()), InvalidSymbol),
-        ]);
+        assert_eq!(
+            parser.parse().errors,
+            vec![
+                Error::new(TextRange::new(1.into(), 2.into()), InvalidSymbol),
+                Error::new(TextRange::new(4.into(), 5.into()), InvalidSymbol),
+            ]
+        );
         let text = "x.1:2.3 x.1..2:3 x.1:1:2";
         let parser = Parser::new(text.chars());
-        assert_eq!(parser.parse().errors, vec![
-            Error::new(TextRange::new(3.into(), 7.into()), InvalidSymbol),
-            Error::new(TextRange::new(11.into(), 16.into()), InvalidSymbol),
-            Error::new(TextRange::new(20.into(), 24.into()), InvalidSymbol),
-        ]);
+        assert_eq!(
+            parser.parse().errors,
+            vec![
+                Error::new(TextRange::new(3.into(), 7.into()), InvalidSymbol),
+                Error::new(
+                    TextRange::new(11.into(), 16.into()),
+                    InvalidSymbol
+                ),
+                Error::new(
+                    TextRange::new(20.into(), 24.into()),
+                    InvalidSymbol
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -975,20 +987,23 @@ mod tests {
         let text = "(with-open 1.1] [a])";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
-        assert_eq!(parsed.errors, vec![
-            Error::new(
-                TextRange::new(11.into(), 14.into()),
-                Unexpected(FLOAT)
-            ),
-            Error::new(
-                TextRange::new(14.into(), 15.into()),
-                Unexpected(R_BRACKET)
-            ),
-            Error::new(
-                TextRange::new(18.into(), 19.into()),
-                Unterminated(N_NV_PAIR)
-            ),
-        ]);
+        assert_eq!(
+            parsed.errors,
+            vec![
+                Error::new(
+                    TextRange::new(11.into(), 14.into()),
+                    Unexpected(FLOAT)
+                ),
+                Error::new(
+                    TextRange::new(14.into(), 15.into()),
+                    Unexpected(R_BRACKET)
+                ),
+                Error::new(
+                    TextRange::new(18.into(), 19.into()),
+                    Unterminated(N_NV_PAIR)
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -996,17 +1011,23 @@ mod tests {
         let text = "(for [i 1 128 &until ] (set x (+ x i)))";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
-        assert_eq!(parsed.errors, vec![Error::new(
-            TextRange::new(21.into(), 22.into()),
-            Unterminated(N_UNTIL_CLAUSE)
-        ),]);
+        assert_eq!(
+            parsed.errors,
+            vec![Error::new(
+                TextRange::new(21.into(), 22.into()),
+                Unterminated(N_UNTIL_CLAUSE)
+            ),]
+        );
         let text = "(let [{: x} {:x :3} (print x))";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
-        assert_eq!(parsed.errors, vec![Error::new(
-            TextRange::new(29.into(), 30.into()),
-            Unterminated(N_ASSIGN_PAIR)
-        ),]);
+        assert_eq!(
+            parsed.errors,
+            vec![Error::new(
+                TextRange::new(29.into(), 30.into()),
+                Unterminated(N_ASSIGN_PAIR)
+            ),]
+        );
     }
 
     #[test]
@@ -1014,9 +1035,12 @@ mod tests {
         let text = "(x";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
-        assert_eq!(parsed.errors, vec![
-            Error::new(TextRange::new(0.into(), 1.into()), Dismatched),
-            Error::new(TextRange::new(1.into(), 1.into()), UnexpectedEof),
-        ]);
+        assert_eq!(
+            parsed.errors,
+            vec![
+                Error::new(TextRange::new(0.into(), 1.into()), Dismatched),
+                Error::new(TextRange::new(1.into(), 1.into()), UnexpectedEof),
+            ]
+        );
     }
 }

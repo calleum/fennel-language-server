@@ -1,7 +1,7 @@
 use rowan::{ast::AstNode, TextRange};
 
 use crate::{
-    ast::{eval, func::FuncAst, macros::ast_assoc, models, nodes::*},
+    ast::{eval, func::FuncAst, models, nodes::*},
     SyntaxKind, SyntaxNode,
 };
 

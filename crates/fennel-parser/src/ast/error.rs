@@ -1,25 +1,28 @@
 use rowan::{ast::AstNode, TextRange, WalkEvent};
 
 use crate::{
-    ast::{eval::EvalAst, func::FuncAst, macros::ast_assoc, nodes::*},
+    ast::{eval::EvalAst, func::FuncAst, nodes::*},
     models, Error,
     ErrorKind::*,
     SyntaxKind, SyntaxNode, SyntaxToken,
 };
 
-ast_assoc!(Provider, [
-    List,
-    SubList,
-    FuncAst,
-    BindingSymbol,
-    RightSymbol,
-    MatchTry,
-    RequireMacros,
-    PickArgs,
-    Global,
-    IntoClause,
-    UntilClause,
-]);
+ast_assoc!(
+    Provider,
+    [
+        List,
+        SubList,
+        FuncAst,
+        BindingSymbol,
+        RightSymbol,
+        MatchTry,
+        RequireMacros,
+        PickArgs,
+        Global,
+        IntoClause,
+        UntilClause,
+    ]
+);
 
 impl List {
     fn macro_whitespace(&self) -> Option<Error> {
@@ -309,12 +312,15 @@ ast_assoc!(Suppress, [MacroQuote, FuncAst]);
 impl MacroQuote {
     pub(crate) fn suppress(&self) -> (TextRange, Vec<SuppressErrorKind>) {
         let range = self.syntax().text_range();
-        (range, vec![
-            SuppressErrorKind::Unused,
-            SuppressErrorKind::Unterminated,
-            SuppressErrorKind::Undefined,
-            SuppressErrorKind::AllUnexpected,
-        ])
+        (
+            range,
+            vec![
+                SuppressErrorKind::Unused,
+                SuppressErrorKind::Unterminated,
+                SuppressErrorKind::Undefined,
+                SuppressErrorKind::AllUnexpected,
+            ],
+        )
     }
 }
 
@@ -331,10 +337,15 @@ impl FuncAst {
                     .map_or(false, |(s, _)| s == "fnl/arglist")
                 {
                     v.map(|args| {
-                        (args.syntax().text_range(), vec![
-                            SuppressErrorKind::Undefined,
-                            SuppressErrorKind::Unexpected(SyntaxKind::CAPTURE),
-                        ])
+                        (
+                            args.syntax().text_range(),
+                            vec![
+                                SuppressErrorKind::Undefined,
+                                SuppressErrorKind::Unexpected(
+                                    SyntaxKind::CAPTURE,
+                                ),
+                            ],
+                        )
                     })
                 } else {
                     None

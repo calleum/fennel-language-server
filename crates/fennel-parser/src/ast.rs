@@ -182,7 +182,7 @@ impl Ast {
         &self,
         offset: u32,
         trigger: Option<String>,
-    ) -> (LSymbols, Globals) {
+    ) -> (LSymbols<'_>, Globals) {
         let root = SyntaxNode::new_root(self.root.clone());
         let token =
             root.token_at_offset(TextSize::from(offset)).right_biased();
@@ -216,10 +216,10 @@ impl Ast {
                 Some("table.") => Vec::from(include!("static/modules/table")),
                 _ => vec![],
             };
-            return (Box::new(::std::iter::empty()), vec![(
-                models::CompletionKind::Field,
-                res,
-            )]);
+            return (
+                Box::new(::std::iter::empty()),
+                vec![(models::CompletionKind::Field, res)],
+            );
         }
 
         let call_position = || -> Option<bool> {
@@ -463,15 +463,16 @@ impl Ast {
             })
             .filter_map(|r_symbol| {
                 let text = r_symbol.token.text.as_str();
-                ;
                 if self.globals.contains(text)
                     || Vec::from(include!("static/compiler-macro"))
                         .contains(&text)
                 {
                     None
                 } else {
-                    Some(Error::new(r_symbol.token.range, Undefined(text.to_string()
-                    )))
+                    Some(Error::new(
+                        r_symbol.token.range,
+                        Undefined(text.to_string()),
+                    ))
                 }
             })
             .collect()
@@ -553,7 +554,7 @@ impl Ast {
         self.l_symbols.get(offset)
     }
 
-    fn l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> FindLSymbol {
+    fn l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> FindLSymbol<'_> {
         match r_symbol.special {
             models::SpecialKind::Normal
             | models::SpecialKind::MacroUnquote => self
@@ -755,10 +756,13 @@ mod tests {
     fn check_undefined() {
         let text = "(x) (fn x [] (+))";
         let mut ast = parse(text.chars(), HashSet::new());
-        assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), vec![
-            &Error::new(TextRange::new(1.into(), 2.into()), Undefined("x".to_string()
-            ))
-        ],);
+        assert_eq!(
+            ast.filtered_errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(
+                TextRange::new(1.into(), 2.into()),
+                Undefined("x".to_string())
+            )],
+        );
         ast.update_globals(vec!["x".to_owned()]);
         assert_eq!(
             ast.filtered_errors().collect::<Vec<&Error>>(),
@@ -770,28 +774,36 @@ mod tests {
     fn check_undefined_fn_name() {
         let text = "(fn x.a [] (+))(fn x [] (+))";
         let ast = parse(text.chars(), HashSet::new());
-        assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), vec![
-            &Error::new(TextRange::new(4.into(), 5.into()), Undefined("a".to_string()))
-        ],);
+        assert_eq!(
+            ast.filtered_errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(
+                TextRange::new(4.into(), 5.into()),
+                Undefined("x".to_string())
+            )],
+        );
     }
 
     #[test]
     fn check_undefined_destruct() {
         let text = "(let [ {abc abc} {:name 3} ] (print abc))";
         let ast = parse(text.chars(), HashSet::new());
-        assert_eq!(ast.errors().collect::<Vec<&Error>>(), vec![&Error::new(
-            TextRange::new(8.into(), 11.into()),
-            Undefined("name".to_string())
-        )],);
+        assert_eq!(
+            ast.errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(
+                TextRange::new(8.into(), 11.into()),
+                Undefined("abc".to_string())
+            )],
+        );
     }
 
     #[test]
     fn check_unused() {
         let text = "(fn x [] (+)) (local _y 1)";
         let ast = parse(text.chars(), HashSet::new());
-        assert_eq!(ast.on_save_errors().collect::<Vec<&Error>>(), vec![
-            &Error::new(TextRange::new(4.into(), 5.into()), Unused,)
-        ],);
+        assert_eq!(
+            ast.on_save_errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(4.into(), 5.into()), Unused,)],
+        );
     }
 
     #[test]
@@ -995,7 +1007,10 @@ mod tests {
             parse(text.chars(), HashSet::new())
                 .errors()
                 .collect::<Vec<&Error>>(),
-            vec![&Error::new(TextRange::new(5.into(), 6.into()), Undefined("x".to_string())),]
+            vec![&Error::new(
+                TextRange::new(5.into(), 6.into()),
+                Undefined("x".to_string())
+            ),]
         )
     }
 
@@ -1180,14 +1195,20 @@ mod tests {
         let text = r#":a ":b" "a b" "#;
         let ast = parse(text.chars(), HashSet::new());
 
-        assert_eq!(ast.hint_action(0), vec![(
-            TextRange::new(0.into(), 2.into()),
-            Action::ConvertToQuoteString("\"a\"".to_string()),
-        )]);
-        assert_eq!(ast.hint_action(4), vec![(
-            TextRange::new(3.into(), 7.into()),
-            Action::ConvertToColonString("::b".to_string()),
-        )]);
+        assert_eq!(
+            ast.hint_action(0),
+            vec![(
+                TextRange::new(0.into(), 2.into()),
+                Action::ConvertToQuoteString("\"a\"".to_string()),
+            )]
+        );
+        assert_eq!(
+            ast.hint_action(4),
+            vec![(
+                TextRange::new(3.into(), 7.into()),
+                Action::ConvertToColonString("::b".to_string()),
+            )]
+        );
         assert_eq!(ast.hint_action(9), vec![]);
     }
 

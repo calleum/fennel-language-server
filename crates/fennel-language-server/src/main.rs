@@ -295,10 +295,10 @@ impl tower_lsp::LanguageServer for Backend {
             let action = match action {
                 fennel_parser::Action::ConvertToColonString(s) => {
                     let mut map = HashMap::new();
-                    map.insert(uri.clone(), vec![TextEdit::new(
-                        range,
-                        s.to_owned(),
-                    )]);
+                    map.insert(
+                        uri.clone(),
+                        vec![TextEdit::new(range, s.to_owned())],
+                    );
                     CodeActionOrCommand::CodeAction(CodeAction {
                         title: "Convert string to start with a colon"
                             .to_string(),
@@ -309,10 +309,10 @@ impl tower_lsp::LanguageServer for Backend {
                 }
                 fennel_parser::Action::ConvertToQuoteString(s) => {
                     let mut map = HashMap::new();
-                    map.insert(uri.clone(), vec![TextEdit::new(
-                        range,
-                        s.to_owned(),
-                    )]);
+                    map.insert(
+                        uri.clone(),
+                        vec![TextEdit::new(range, s.to_owned())],
+                    );
                     CodeActionOrCommand::CodeAction(CodeAction {
                         title: "Convert string to double-quotes form"
                             .to_string(),
@@ -576,19 +576,15 @@ impl Backend {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = cli::Cli::parse();
     let (read, write) = match &cli.cmd {
         Some(cli::Command::Lsp { cmd: cli::LspCommand::Stdio }) | None => {
             stdio()
         }
         Some(cli::Command::Lsp { cmd: cli::LspCommand::Tcp { address } }) => {
-            // Only one connection accepted
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(tcp_listen(address))
+            tcp_listen(address).await
         }
     };
 
@@ -601,13 +597,8 @@ fn main() {
         config: Arc::new(RwLock::new(config::Configuration::default())),
     })
     .finish();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            tower_lsp::Server::new(read, write, socket).serve(service).await;
-        })
+
+    tower_lsp::Server::new(read, write, socket).serve(service).await;
 }
 
 fn stdio() -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {

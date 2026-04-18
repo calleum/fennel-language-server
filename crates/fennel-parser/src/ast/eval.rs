@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rowan::ast::AstNode;
 
 use crate::{
-    ast::{func, macros::ast_assoc, models, nodes::*},
+    ast::{func, models, nodes::*},
     SyntaxKind, SyntaxNode,
 };
 
