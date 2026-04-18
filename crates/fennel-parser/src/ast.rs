@@ -513,7 +513,7 @@ impl Ast {
     }
 
     fn unused_l_symbols(&self) -> impl Iterator<Item = Error> + '_ {
-        self.l_symbols.0.iter().filter_map(|(_, l_symbol)| {
+        self.l_symbols.0.values().filter_map(|l_symbol| {
             if !l_symbol.token.text.starts_with('_')
                 && l_symbol.scope.kind != models::ScopeKind::Global
                 && l_symbol.token.text != "..."

@@ -150,11 +150,11 @@ impl<'p> Parser<'p> {
 
         // Stop repeat and optional
         match cur_rule {
-            Rule { notation: Repeat(ends) | Optional(ends), .. } => {
-                if ends.contains(cur_token.kind) {
-                    self.skip();
-                    return;
-                }
+            Rule { notation: Repeat(ends) | Optional(ends), .. }
+                if ends.contains(cur_token.kind) =>
+            {
+                self.skip();
+                return;
             }
             Rule { notation: RepeatPeek(ends, follows), .. } => {
                 if ends.contains(cur_token.kind) {
