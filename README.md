@@ -1,29 +1,22 @@
 # fennel-language-server
 
-[![Test](https://github.com/rydesun/fennel-language-server/actions/workflows/test.yaml/badge.svg)](https://github.com/rydesun/fennel-language-server/actions/workflows/test.yaml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/rydesun/fennel-language-server/blob/master/LICENSE)
+[![Test](https://github.com/calleum/fennel-language-server/actions/workflows/test.yaml/badge.svg)](https://github.com/calleum/fennel-language-server/actions/workflows/test.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/calleum/fennel-language-server/blob/main/LICENSE)
 
 Fennel language server protocol (LSP) support.
 
-`fennel-language-server` is currently in a very early stage and unreliable.
-Use it just for an encouraging try.
+This is a maintained fork of [rydesun/fennel-language-server](https://github.com/rydesun/fennel-language-server).
+
+`fennel-language-server` is currently in an early stage. Contributions are welcome!
 
 ## Installation
 
-### Via Mason (Recommended for Neovim)
-
-If you are using Neovim, the easiest way to install `fennel-language-server` is via [mason.nvim](https://github.com/williamboman/mason.nvim).
-
-```vim
-:MasonInstall fennel-language-server
-```
-
 ### Via Cargo
 
-Because it is written in Rust, you can also install it via `cargo`.
+You can also install it via `cargo`.
 
 ```sh
-cargo install --git https://github.com/rydesun/fennel-language-server
+cargo install --git https://github.com/calleum/fennel-language-server
 ```
 
 No demand for the Fennel environment. You don't even need Fennel runtime!
@@ -31,53 +24,47 @@ No demand for the Fennel environment. You don't even need Fennel runtime!
 ## Integration
 
 **NOTE**: The executable file is named `fennel-language-server`.
-The former name `fennel-ls` has been abandoned (and now refers to a different implementation).
 
 ### Neovim
 
-`fennel-language-server` is natively supported by [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig).
-
-#### Basic Setup
+Neovim 0.11+ provides a built-in way to configure and enable language servers using `vim.lsp.config` and `vim.lsp.enable`.
 
 ```lua
-require('lspconfig').fennel_language_server.setup({
+vim.lsp.config('fennel_language_server', {
+  cmd = { 'fennel-language-server' },
+  filetypes = { 'fennel' },
+  root_markers = { '.nfnl.fnl', 'fnl', '.git' },
   settings = {
     fennel = {
       workspace = {
-        -- If you are using hotpot.nvim or aniseed,
-        -- make the server aware of neovim runtime files.
         library = vim.api.nvim_list_runtime_paths(),
       },
       diagnostics = {
-        globals = {'vim'},
+        globals = { 'vim' },
       },
     },
   },
 })
+
+vim.lsp.enable('fennel_language_server')
 ```
 
-#### nfnl Setup
-
-If you are using [nfnl](https://github.com/Olical/nfnl), use the following configuration:
+If you prefer `nvim-lspconfig`:
 
 ```lua
 require('lspconfig').fennel_language_server.setup({
-  -- Ensure the LSP starts for nfnl projects
-  root_dir = require('lspconfig').util.root_pattern(".nfnl.fnl", "fnl", ".git"),
   settings = {
     fennel = {
       workspace = {
-        library = vim.api.nvim_get_runtime_file("", true),
+        library = vim.api.nvim_list_runtime_paths(),
       },
       diagnostics = {
-        globals = {"vim"},
+        globals = { 'vim' },
       },
     },
   },
 })
 ```
-
-*Note: If you have installed the server via Mason, ensure you have [mason-lspconfig.nvim](https://github.com/williamboman/mason-lspconfig.nvim) installed to automatically set up the path.*
 
 ## Status
 
