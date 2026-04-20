@@ -1,10 +1,11 @@
-use rowan::{ast::AstNode, TextRange, WalkEvent};
+use rowan::{TextRange, WalkEvent, ast::AstNode};
 
 use crate::{
-    ast::{eval::EvalAst, func::FuncAst, nodes::*},
-    models, Error,
+    Error,
     ErrorKind::*,
     SyntaxKind, SyntaxNode, SyntaxToken,
+    ast::{eval::EvalAst, func::FuncAst, models::SuppressErrorKind, nodes::*},
+    models,
 };
 
 ast_assoc!(
@@ -45,11 +46,7 @@ impl List {
 
     fn empty_list(&self) -> Option<Error> {
         let node = self.syntax();
-        if !node
-            .first_token()
-            .map(|t| t.kind() == SyntaxKind::L_PAREN)
-            .unwrap_or(false)
-        {
+        if !node.first_token().map(|t| t.kind() == SyntaxKind::L_PAREN).unwrap_or(false) {
             return None;
         }
         if !node.children_with_tokens().any(|c| {
@@ -87,18 +84,10 @@ impl SubList {
             ]
             .contains(&kind)
             {
-                return Some(Error::new(
-                    eval_ast.syntax().text_range(),
-                    LiteralCall(kind),
-                ));
+                return Some(Error::new(eval_ast.syntax().text_range(), LiteralCall(kind)));
             }
-            if [models::ValueKind::Module, models::ValueKind::FileHandle]
-                .contains(&kind)
-            {
-                return Some(Error::new(
-                    eval_ast.syntax().text_range(),
-                    DirectCall(kind),
-                ));
+            if [models::ValueKind::Module, models::ValueKind::FileHandle].contains(&kind) {
+                return Some(Error::new(eval_ast.syntax().text_range(), DirectCall(kind)));
             }
         }
         None
@@ -112,9 +101,7 @@ impl FuncAst {
                 return None;
             }
             node.children_with_tokens()
-                .find(|t| {
-                    t.as_token().unwrap().kind() == SyntaxKind::SYMBOL_METHOD
-                })
+                .find(|t| t.as_token().unwrap().kind() == SyntaxKind::SYMBOL_METHOD)
                 .map(|_| Error::new(node.text_range(), MethodNotAllowed))
         })
     }
@@ -146,12 +133,7 @@ impl FuncAst {
         } else if varargs.len() == 1 {
             None
         } else {
-            Some(
-                varargs
-                    .into_iter()
-                    .map(|t| Error::new(t.text_range(), MultiVarargs))
-                    .collect(),
-            )
+            Some(varargs.into_iter().map(|t| Error::new(t.text_range(), MultiVarargs)).collect())
         }
     }
 }
@@ -162,9 +144,9 @@ impl BindingSymbol {
         node.children_with_tokens().find_map(|t| {
             let kind = t.as_token().unwrap().kind();
             match kind {
-                SyntaxKind::SYMBOL_FIELD | SyntaxKind::SYMBOL_METHOD => Some(
-                    Error::new(node.text_range(), FieldAndMethodNotAllowed),
-                ),
+                SyntaxKind::SYMBOL_FIELD | SyntaxKind::SYMBOL_METHOD => {
+                    Some(Error::new(node.text_range(), FieldAndMethodNotAllowed))
+                }
                 _ => None,
             }
         })
@@ -180,9 +162,7 @@ impl RightSymbol {
         node.children_with_tokens().find_map(|t| {
             let kind = t.as_token().unwrap().kind();
             match kind {
-                SyntaxKind::SYMBOL_METHOD => {
-                    Some(Error::new(node.text_range(), MethodNotAllowed))
-                }
+                SyntaxKind::SYMBOL_METHOD => Some(Error::new(node.text_range(), MethodNotAllowed)),
                 _ => None,
             }
         })
@@ -195,9 +175,7 @@ impl MatchTry {
         let catchs: Vec<SyntaxNode> = node
             .children()
             .filter(|n| n.kind() == SyntaxKind::N_MATCH_TRY_CLAUSE)
-            .filter(|n| {
-                n.first_child().unwrap().kind() == SyntaxKind::N_CATCH_LIST
-            })
+            .filter(|n| n.first_child().unwrap().kind() == SyntaxKind::N_CATCH_LIST)
             .collect();
         let mut res = vec![];
 
@@ -209,13 +187,9 @@ impl MatchTry {
             );
         }
         if let Some(last_catch) = catchs.last() {
-            let last_clause =
-                self.syntax().last_child().unwrap().first_child().unwrap();
+            let last_clause = self.syntax().last_child().unwrap().first_child().unwrap();
             if last_clause.kind() != SyntaxKind::N_CATCH_LIST {
-                res.push(Some(Error::new(
-                    last_catch.text_range(),
-                    CatchNotLast,
-                )));
+                res.push(Some(Error::new(last_catch.text_range(), CatchNotLast)));
             }
         }
 
@@ -273,11 +247,9 @@ impl UntilClause {
 }
 
 impl Provider {
-    pub(crate) fn errors(&self) -> impl Iterator<Item = Option<Error>> {
+    pub(crate) fn errors(&self) -> impl Iterator<Item = Option<Error>> + use<> {
         match self {
-            Self::List(n) => {
-                vec![n.macro_whitespace(), n.empty_list()].into_iter()
-            }
+            Self::List(n) => vec![n.macro_whitespace(), n.empty_list()].into_iter(),
             Self::SubList(n) => vec![n.literal_call()].into_iter(),
             Self::FuncAst(n) => {
                 let mut res = vec![n.def_method()];
@@ -298,15 +270,6 @@ impl Provider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum SuppressErrorKind {
-    Unused,
-    Unterminated,
-    Undefined,
-    AllUnexpected,
-    Unexpected(SyntaxKind),
-}
-
 ast_assoc!(Suppress, [MacroQuote, FuncAst]);
 
 impl MacroQuote {
@@ -325,25 +288,18 @@ impl MacroQuote {
 }
 
 impl FuncAst {
-    pub(crate) fn suppress(
-        &self,
-    ) -> Option<Vec<(TextRange, Vec<SuppressErrorKind>)>> {
-        let metadata =
-            self.metadata().and_then(EvalAst::cast)?.cast_kv_table()?;
+    pub(crate) fn suppress(&self) -> Option<Vec<(TextRange, Vec<SuppressErrorKind>)>> {
+        let metadata = self.metadata().and_then(EvalAst::cast)?.cast_kv_table()?;
         let res = metadata
             .iter()
             .filter_map(|(k, v)| {
-                if k.and_then(|k| k.cast_string())
-                    .is_some_and(|(s, _)| s == "fnl/arglist")
-                {
+                if k.and_then(|k| k.cast_string()).is_some_and(|(s, _)| s == "fnl/arglist") {
                     v.map(|args| {
                         (
                             args.syntax().text_range(),
                             vec![
                                 SuppressErrorKind::Undefined,
-                                SuppressErrorKind::Unexpected(
-                                    SyntaxKind::CAPTURE,
-                                ),
+                                SuppressErrorKind::Unexpected(SyntaxKind::CAPTURE),
                             ],
                         )
                     })

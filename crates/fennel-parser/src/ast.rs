@@ -7,19 +7,21 @@ mod func;
 pub mod models;
 mod nodes;
 
+pub use self::models::{
+    Action, AstDocumentSymbol, AstSymbolInformation, Definition, Globals, SuppressErrorKind,
+};
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
 };
 
-use rowan::{ast::AstNode, GreenNode, TextRange, TextSize};
+use rowan::{GreenNode, TextRange, TextSize, ast::AstNode};
 
 use self::{
     bind::{Binding, BindingListAst},
-    error::SuppressErrorKind,
     nodes::Root,
 };
-use crate::{lexer, Error, ErrorKind::*, SyntaxKind, SyntaxNode};
+use crate::{Error, ErrorKind::*, SyntaxKind, SyntaxNode, lexer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ast {
@@ -36,8 +38,7 @@ pub struct Ast {
     pub globals_errors: Vec<Error>,
     pub unused_l_symbol_errors: Vec<Error>,
     pub other_errors: Vec<Error>,
-    pub(crate) suppressed_errors:
-        Vec<(TextRange, Vec<error::SuppressErrorKind>)>,
+    pub(crate) suppressed_errors: Vec<(TextRange, Vec<SuppressErrorKind>)>,
 }
 
 impl Ast {
@@ -46,13 +47,10 @@ impl Ast {
         parser_errors: Vec<Error>,
         mut user_globals: HashSet<String>,
     ) -> Self {
-        let root =
-            Root::cast(SyntaxNode::new_root(green_node.clone())).unwrap();
+        let root = Root::cast(SyntaxNode::new_root(green_node.clone())).unwrap();
 
-        let lua_globals: HashSet<&'static str> =
-            HashSet::from(include!("static/globals"));
-        let lua_modules: HashSet<&'static str> =
-            HashSet::from(include!("static/globals-module"));
+        let lua_globals: HashSet<&'static str> = HashSet::from(include!("static/globals"));
+        let lua_modules: HashSet<&'static str> = HashSet::from(include!("static/globals-module"));
         lua_globals.iter().for_each(|v| {
             user_globals.insert(v.to_string());
         });
@@ -77,10 +75,8 @@ impl Ast {
         ast.update_resources();
         ast.update_definition_errors();
 
-        let mut other_errors: Vec<Error> = root
-            .provide_errors()
-            .chain(root.delimiter_whitespace_errors())
-            .collect();
+        let mut other_errors: Vec<Error> =
+            root.provide_errors().chain(root.delimiter_whitespace_errors()).collect();
         other_errors.extend(ast.definition_conflict_errors());
         ast.unused_l_symbol_errors = ast.unused_l_symbols().collect();
         ast.other_errors = other_errors;
@@ -105,31 +101,40 @@ impl Ast {
     }
 
     pub fn on_save_errors(&self) -> impl Iterator<Item = &Error> {
-        self.unused_l_symbol_errors
-            .iter()
-            .filter(|e| !self.error_is_suppressed(e))
+        self.unused_l_symbol_errors.iter().filter(|e| !self.error_is_suppressed(e))
     }
 
     pub fn definition(&self, offset: u32) -> Option<Definition> {
         let root = SyntaxNode::new_root(self.root.clone());
 
-        let mut token =
-            root.token_at_offset(TextSize::from(offset)).right_biased()?;
+        let mut token = root.token_at_offset(TextSize::from(offset)).right_biased()?;
 
-        if let Some(path) = TryInto::<nodes::Literal>::try_into(token.clone())
-            .ok()
-            .and_then(|n| {
-                if nodes::get_ancestor::<nodes::SymbolCall>(n.syntax())
-                    .map(|n| n.is_require())
-                    .unwrap_or(false)
-                {
-                    n.cast_path()
-                } else {
-                    None
-                }
-            })
-        {
+        if let Some(path) = TryInto::<nodes::Literal>::try_into(token.clone()).ok().and_then(|n| {
+            if nodes::get_ancestor::<nodes::SymbolCall>(n.syntax())
+                .map(|n| n.is_require())
+                .unwrap_or(false)
+            {
+                n.cast_path()
+            } else {
+                None
+            }
+        }) {
             return Some(Definition::File(path));
+        }
+
+        // Handle multi-symbols (e.g. vim.lsp.set_log_level)
+        if let Some(n) = token.parent()
+            && (n.kind() == SyntaxKind::N_R_SYMBOL || n.kind() == SyntaxKind::N_L_R_SYMBOL)
+        {
+            let mut path = PathBuf::new();
+            for child in n.children_with_tokens() {
+                let text = child.to_string();
+                let part = text.strip_prefix('.').unwrap_or(&text);
+                path.push(part);
+                if child.text_range().contains(TextSize::from(offset)) {
+                    return Some(Definition::File(path));
+                }
+            }
         }
 
         if token.kind() == SyntaxKind::COMMA {
@@ -138,8 +143,7 @@ impl Ast {
         let token_start = token.text_range().start().into();
 
         if let Some(symbol) = self.l_symbol(token_start) {
-            if let models::ValueKind::Require(Some(path)) = &symbol.value.kind
-            {
+            if let models::ValueKind::Require(Some(path)) = &symbol.value.kind {
                 return Some(Definition::File(path.clone()));
             } else {
                 return Some(Definition::Symbol(symbol.clone(), true));
@@ -147,25 +151,70 @@ impl Ast {
         }
 
         let r_symbol = self.r_symbol(token_start)?;
-        self.l_symbol_by_r(r_symbol)
-            .found()
-            .map(|s| Definition::Symbol(s.clone(), false))
+        self.l_symbol_by_r(r_symbol).found().map(|s| Definition::Symbol(s.clone(), false))
+    }
+
+    fn get_children(&self, node: SyntaxNode) -> Vec<AstDocumentSymbol> {
+        let mut symbols = vec![];
+        for child in node.children() {
+            if let Some(bindings) = BindingListAst::cast(child.clone()) {
+                if let Some(lsymbols) = bindings.bindings() {
+                    for lsym in lsymbols {
+                        let resolved_lsym =
+                            self.l_symbols.get(lsym.token.range.start().into()).unwrap_or(&lsym);
+
+                        let children = self.get_children(child.clone());
+                        symbols.push(AstDocumentSymbol::new(
+                            resolved_lsym.token.text.clone(),
+                            None,
+                            resolved_lsym.value.kind.clone(),
+                            resolved_lsym.value.range.unwrap_or(resolved_lsym.token.range),
+                            resolved_lsym.token.range,
+                            if children.is_empty() { None } else { Some(children) },
+                        ));
+                    }
+                }
+            } else {
+                symbols.extend(self.get_children(child));
+            }
+        }
+        symbols
+    }
+
+    pub fn document_symbols(&self) -> Vec<AstDocumentSymbol> {
+        let root = SyntaxNode::new_root(self.root.clone());
+        self.get_children(root)
+    }
+
+    pub fn document_symbol(&self) -> Vec<AstSymbolInformation> {
+        let _root = SyntaxNode::new_root(self.root.clone());
+
+        self.l_symbols
+            .clone()
+            .0
+            .values()
+            .map(|a| {
+                AstSymbolInformation::new(
+                    a.token.text.clone(),
+                    a.value.kind.clone(),
+                    a.value
+                        .range
+                        .unwrap_or(TextRange::new(TextSize::new(0_u32), TextSize::new(1_u32))),
+                )
+            })
+            .collect()
     }
 
     pub fn reference(&self, offset: u32) -> Option<Vec<TextRange>> {
         let root = SyntaxNode::new_root(self.root.clone());
 
-        let token =
-            root.token_at_offset(TextSize::from(offset)).right_biased()?;
+        let token = root.token_at_offset(TextSize::from(offset)).right_biased()?;
 
-        let l_symbol = self
-            .l_symbol(token.text_range().start().into())
-            .cloned()
-            .or_else(|| {
-                let r_symbol = self.r_symbol(offset)?;
-                let l_symbol = self.l_symbol_by_r(r_symbol);
-                l_symbol.found().cloned()
-            })?;
+        let l_symbol = self.l_symbol(token.text_range().start().into()).cloned().or_else(|| {
+            let r_symbol = self.r_symbol(offset)?;
+            let l_symbol = self.l_symbol_by_r(r_symbol);
+            l_symbol.found().cloned()
+        })?;
 
         let mut ranges = vec![l_symbol.token.range];
         ranges.extend(
@@ -178,14 +227,9 @@ impl Ast {
         Some(ranges)
     }
 
-    pub fn completion(
-        &self,
-        offset: u32,
-        trigger: Option<String>,
-    ) -> (LSymbols<'_>, Globals) {
+    pub fn completion(&self, offset: u32, trigger: Option<String>) -> (LSymbolsIter<'_>, Globals) {
         let root = SyntaxNode::new_root(self.root.clone());
-        let token =
-            root.token_at_offset(TextSize::from(offset)).right_biased();
+        let token = root.token_at_offset(TextSize::from(offset)).right_biased();
         if token.is_none() {
             return (Box::new(vec![].into_iter()), vec![]);
         }
@@ -199,27 +243,18 @@ impl Ast {
                 .map(|t| t.text().to_string());
 
             let res = match token.as_deref() {
-                Some("coroutine.") => {
-                    Vec::from(include!("static/modules/coroutine"))
-                }
+                Some("coroutine.") => Vec::from(include!("static/modules/coroutine")),
                 Some("debug.") => Vec::from(include!("static/modules/debug")),
                 Some("file:") => Vec::from(include!("static/modules/file")),
                 Some("io.") => Vec::from(include!("static/modules/io")),
                 Some("math.") => Vec::from(include!("static/modules/math")),
                 Some("os.") => Vec::from(include!("static/modules/os")),
-                Some("package.") => {
-                    Vec::from(include!("static/modules/package"))
-                }
-                Some("string.") => {
-                    Vec::from(include!("static/modules/string"))
-                }
+                Some("package.") => Vec::from(include!("static/modules/package")),
+                Some("string.") => Vec::from(include!("static/modules/string")),
                 Some("table.") => Vec::from(include!("static/modules/table")),
                 _ => vec![],
             };
-            return (
-                Box::new(::std::iter::empty()),
-                vec![(models::CompletionKind::Field, res)],
-            );
+            return (Box::new(::std::iter::empty()), vec![(models::CompletionKind::Field, res)]);
         }
 
         let call_position = || -> Option<bool> {
@@ -242,8 +277,7 @@ impl Ast {
                 return Some(false);
             }
 
-            let mut prevs =
-                token.siblings_with_tokens(rowan::Direction::Prev).peekable();
+            let mut prevs = token.siblings_with_tokens(rowan::Direction::Prev).peekable();
             if prevs.peek().unwrap().kind() == SyntaxKind::R_PAREN {
                 prevs.next();
             }
@@ -271,23 +305,14 @@ impl Ast {
             Some(res)
         }();
 
-        let mut globals = vec![(
-            models::CompletionKind::Module,
-            Vec::from(include!("static/globals-module")),
-        )];
+        let mut globals =
+            vec![(models::CompletionKind::Module, Vec::from(include!("static/globals-module")))];
         if call_position.unwrap_or(false) {
-            globals.push((
-                models::CompletionKind::Func,
-                Vec::from(include!("static/globals-func")),
-            ));
-            globals.push((
-                models::CompletionKind::Keyword,
-                Vec::from(include!("static/keywords")),
-            ));
-            globals.push((
-                models::CompletionKind::Operator,
-                Vec::from(include!("static/operator")),
-            ));
+            globals
+                .push((models::CompletionKind::Func, Vec::from(include!("static/globals-func"))));
+            globals.push((models::CompletionKind::Keyword, Vec::from(include!("static/keywords"))));
+            globals
+                .push((models::CompletionKind::Operator, Vec::from(include!("static/operator"))));
             if token.parent_ancestors().any(|n| {
                 [
                     SyntaxKind::N_MACRO,
@@ -303,45 +328,32 @@ impl Ast {
                 ))
             }
         } else {
-            globals.push((
-                models::CompletionKind::Keyword,
-                Vec::from(include!("static/literals")),
-            ));
-            globals.push((
-                models::CompletionKind::Var,
-                Vec::from(include!("static/globals-var")),
-            ));
+            globals.push((models::CompletionKind::Keyword, Vec::from(include!("static/literals"))));
+            globals.push((models::CompletionKind::Var, Vec::from(include!("static/globals-var"))));
         }
         (Box::new(self.l_symbols.range(offset)), globals)
     }
 
     pub fn hint_action(&self, offset: u32) -> Vec<(TextRange, Action)> {
         let root = SyntaxNode::new_root(self.root.clone());
-        let token = match root
-            .token_at_offset(TextSize::from(offset))
-            .right_biased()
-        {
+        let token = match root.token_at_offset(TextSize::from(offset)).right_biased() {
             Some(n) => n,
             None => return vec![],
         };
         let range = token.text_range();
         let mut res = vec![];
-        if let Ok(n) = TryInto::<nodes::Literal>::try_into(token) {
-            if let Some((s, kind)) = n.cast_string() {
-                match kind {
-                    eval::StringKind::Quote => {
-                        let new_s = format!(":{}", s);
-                        if self.validate_colon_string(&new_s) {
-                            res.push((
-                                range,
-                                Action::ConvertToColonString(new_s),
-                            ))
-                        }
+        if let Ok(n) = TryInto::<nodes::Literal>::try_into(token)
+            && let Some((s, kind)) = n.cast_string()
+        {
+            match kind {
+                eval::StringKind::Quote => {
+                    let new_s = format!(":{}", s);
+                    if self.validate_colon_string(&new_s) {
+                        res.push((range, Action::ConvertToColonString(new_s)))
                     }
-                    eval::StringKind::Colon => res.push((
-                        range,
-                        Action::ConvertToQuoteString(format!("\"{}\"", s)),
-                    )),
+                }
+                eval::StringKind::Colon => {
+                    res.push((range, Action::ConvertToQuoteString(format!("\"{}\"", s))))
                 }
             }
         }
@@ -351,21 +363,14 @@ impl Ast {
     pub fn literal_value(&self, value: models::Value) -> Option<String> {
         if !matches!(
             value.kind,
-            models::ValueKind::Bool
-                | models::ValueKind::Number
-                | models::ValueKind::String
+            models::ValueKind::Bool | models::ValueKind::Number | models::ValueKind::String
         ) {
             return None;
         }
         let root = SyntaxNode::new_root(self.root.clone());
         let value_range = value.range?;
-        let token =
-            root.token_at_offset(value_range.start()).right_biased()?;
-        if token.text_range() == value_range {
-            Some(token.text().to_owned())
-        } else {
-            None
-        }
+        let token = root.token_at_offset(value_range.start()).right_biased()?;
+        if token.text_range() == value_range { Some(token.text().to_owned()) } else { None }
     }
 
     pub fn docstring(&self, range: TextRange) -> Option<String> {
@@ -384,11 +389,8 @@ impl Ast {
     }
 
     #[allow(unused)]
-    pub(crate) fn return_kv_table(
-        &self,
-    ) -> Option<HashMap<String, eval::EvalAst>> {
-        let root =
-            Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
+    pub(crate) fn return_kv_table(&self) -> Option<HashMap<String, eval::EvalAst>> {
+        let root = Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
         root.return_kv_table()
     }
 
@@ -400,11 +402,9 @@ impl Ast {
                 .filter_map(|n| n.bindings())
                 .flatten(),
         );
-        let mut r_symbols =
-            nodes::Root::cast(root.clone()).unwrap().r_symbols();
+        let mut r_symbols = nodes::Root::cast(root.clone()).unwrap().r_symbols();
 
-        let new_r_symbols =
-            Root::cast(root).unwrap().correct_symbols(&mut l_symbols);
+        let new_r_symbols = Root::cast(root).unwrap().correct_symbols(&mut l_symbols);
         r_symbols.extend(new_r_symbols);
         self.l_symbols = l_symbols;
         self.r_symbols = r_symbols;
@@ -427,17 +427,11 @@ impl Ast {
             .collect();
 
         follows.iter().for_each(|(key, r_symbol_range)| {
-            let token = root
-                .token_at_offset(r_symbol_range.start())
-                .right_biased()
-                .unwrap();
+            let token = root.token_at_offset(r_symbol_range.start()).right_biased().unwrap();
             let text = token.text().to_owned();
             let ref_l_symbol = self
                 .l_symbols
-                .nearest(&models::Token {
-                    text: text.clone(),
-                    range: *r_symbol_range,
-                })
+                .nearest(&models::Token { text: text.clone(), range: *r_symbol_range })
                 .cloned();
             let v = self.l_symbols.0.get_mut(key).unwrap();
             if let Some(l_symbol) = ref_l_symbol {
@@ -449,8 +443,7 @@ impl Ast {
     }
 
     fn update_resources(&mut self) {
-        let root =
-            Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
+        let root = Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
         self.resources = root.resources().collect()
     }
 
@@ -458,21 +451,17 @@ impl Ast {
         self.globals_errors = self
             .r_symbols
             .iter()
-            .filter(|r_symbol| {
-                self.l_symbol_by_r(r_symbol) == FindLSymbol::NotFound
-            })
+            .filter(|r_symbol| self.l_symbol_by_r(r_symbol) == FindLSymbol::NotFound)
             .filter_map(|r_symbol| {
                 let text = r_symbol.token.text.as_str();
+                let base_symbol = text.split('.').next().unwrap_or(text);
                 if self.globals.contains(text)
-                    || Vec::from(include!("static/compiler-macro"))
-                        .contains(&text)
+                    || self.globals.contains(base_symbol)
+                    || Vec::from(include!("static/compiler-macro")).contains(&text)
                 {
                     None
                 } else {
-                    Some(Error::new(
-                        r_symbol.token.range,
-                        Undefined(text.to_string()),
-                    ))
+                    Some(Error::new(r_symbol.token.range, Undefined(text.to_string())))
                 }
             })
             .collect()
@@ -482,28 +471,22 @@ impl Ast {
         self.l_symbols
             .0
             .iter()
-            .filter(|(_, symbol)| {
-                symbol.scope.kind == models::ScopeKind::Global
-            })
+            .filter(|(_, symbol)| symbol.scope.kind == models::ScopeKind::Global)
             .map(|(_, global)| {
                 (
                     global,
-                    self.l_symbols
-                        .range(global.token.range.start().into())
-                        .filter(|l_symbol| {
-                            l_symbol.scope.kind != models::ScopeKind::Global
-                                && l_symbol.contains_token(&global.token)
-                        }),
+                    self.l_symbols.range(global.token.range.start().into()).filter(|l_symbol| {
+                        l_symbol.scope.kind != models::ScopeKind::Global
+                            && l_symbol.contains_token(&global.token)
+                    }),
                 )
             })
             .filter_map(|(global, conflicts)| {
                 let mut conflicts = conflicts.peekable();
                 if conflicts.peek().is_some() {
-                    let mut conflicts: Vec<Error> = conflicts
-                        .map(|c| Error::new(c.token.range, GlobalConflict))
-                        .collect();
-                    conflicts
-                        .push(Error::new(global.token.range, GlobalConflict));
+                    let mut conflicts: Vec<Error> =
+                        conflicts.map(|c| Error::new(c.token.range, GlobalConflict)).collect();
+                    conflicts.push(Error::new(global.token.range, GlobalConflict));
                     Some(conflicts)
                 } else {
                     None
@@ -517,10 +500,7 @@ impl Ast {
             if !l_symbol.token.text.starts_with('_')
                 && l_symbol.scope.kind != models::ScopeKind::Global
                 && l_symbol.token.text != "..."
-                && !self
-                    .r_symbols
-                    .iter()
-                    .any(|r_symbol| l_symbol.contains_token(&r_symbol.token))
+                && !self.r_symbols.iter().any(|r_symbol| l_symbol.contains_token(&r_symbol.token))
             {
                 Some(Error::new(l_symbol.token.range, Unused))
             } else {
@@ -539,9 +519,7 @@ impl Ast {
                     SuppressErrorKind::AllUnexpected => {
                         matches!(e.kind, Unexpected(..))
                     }
-                    SuppressErrorKind::Unexpected(kind) => {
-                        e.kind == Unexpected(*kind)
-                    }
+                    SuppressErrorKind::Unexpected(kind) => e.kind == Unexpected(*kind),
                     SuppressErrorKind::Undefined => {
                         matches!(e.kind, Undefined(..))
                     }
@@ -556,8 +534,7 @@ impl Ast {
 
     fn l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> FindLSymbol<'_> {
         match r_symbol.special {
-            models::SpecialKind::Normal
-            | models::SpecialKind::MacroUnquote => self
+            models::SpecialKind::Normal | models::SpecialKind::MacroUnquote => self
                 .l_symbols
                 .nearest(&r_symbol.token)
                 .map_or(FindLSymbol::NotFound, FindLSymbol::Found),
@@ -570,27 +547,11 @@ impl Ast {
     }
 
     fn r_symbol(&self, offset: u32) -> Option<&models::RSymbol> {
-        self.r_symbols
-            .iter()
-            .find(|s| s.token.range.contains(TextSize::from(offset)))
+        self.r_symbols.iter().find(|s| s.token.range.contains(TextSize::from(offset)))
     }
 }
 
-type LSymbols<'a> = Box<dyn Iterator<Item = &'a models::LSymbol> + 'a>;
-type Globals = Vec<(models::CompletionKind, Vec<&'static str>)>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Definition {
-    Symbol(models::LSymbol, bool),
-    FileSymbol(PathBuf, models::LSymbol),
-    File(PathBuf),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Action {
-    ConvertToColonString(String),
-    ConvertToQuoteString(String),
-}
+type LSymbolsIter<'a> = Box<dyn Iterator<Item = &'a models::LSymbol> + 'a>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum FindLSymbol<'a> {
@@ -602,24 +563,19 @@ enum FindLSymbol<'a> {
 impl FindLSymbol<'_> {
     // I don't care about skip!
     fn found(&self) -> Option<&models::LSymbol> {
-        if let Self::Found(symbol) = self {
-            Some(symbol)
-        } else {
-            None
-        }
+        if let Self::Found(symbol) = self { Some(symbol) } else { None }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{models::LSymbol, parse, ErrorKind};
+    use crate::{ErrorKind, models::LSymbol, parse};
 
     // Not check these
     impl Ast {
         fn filtered_errors(&self) -> impl Iterator<Item = &Error> {
-            self.errors()
-                .filter(|e| !matches!(e.kind, ErrorKind::Deprecated(..)))
+            self.errors().filter(|e| !matches!(e.kind, ErrorKind::Deprecated(..)))
         }
     }
 
@@ -638,10 +594,7 @@ mod tests {
                     kind: models::ScopeKind::Var,
                     range: TextRange::new(26.into(), 27.into()),
                 },
-                value: models::Value {
-                    kind: models::ValueKind::Unknown,
-                    range: None,
-                },
+                value: models::Value { kind: models::ValueKind::Unknown, range: None },
             },
             models::LSymbol {
                 token: models::Token {
@@ -652,10 +605,7 @@ mod tests {
                     kind: models::ScopeKind::Var,
                     range: TextRange::new(26.into(), 27.into()),
                 },
-                value: models::Value {
-                    kind: models::ValueKind::Unknown,
-                    range: None,
-                },
+                value: models::Value { kind: models::ValueKind::Unknown, range: None },
             },
             models::LSymbol {
                 token: models::Token {
@@ -679,10 +629,7 @@ mod tests {
     fn l_symbols_macro() {
         let text = "(macro x [] (+))";
         let ast = parse(text.chars(), HashSet::new());
-        assert_eq!(
-            ast.filtered_errors().collect::<Vec<&Error>>(),
-            Vec::<&Error>::new()
-        );
+        assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), Vec::<&Error>::new());
         let res = [models::LSymbol {
             token: models::Token {
                 text: "x".to_owned(),
@@ -692,10 +639,7 @@ mod tests {
                 kind: models::ScopeKind::Macro,
                 range: TextRange::new(15.into(), 16.into()),
             },
-            value: models::Value {
-                kind: models::ValueKind::Macro,
-                range: None,
-            },
+            value: models::Value { kind: models::ValueKind::Macro, range: None },
         }];
         assert_eq!(ast.l_symbols, models::LSymbols::new(res.into_iter()));
     }
@@ -704,10 +648,7 @@ mod tests {
     fn l_symbols_match() {
         let text = "(local x 1) (match 1 x 3 y 4)";
         let ast = parse(text.chars(), HashSet::new());
-        assert_eq!(
-            ast.filtered_errors().collect::<Vec<&Error>>(),
-            Vec::<&Error>::new()
-        );
+        assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), Vec::<&Error>::new());
         let l_symbols = [
             models::LSymbol {
                 token: models::Token {
@@ -732,10 +673,7 @@ mod tests {
                     kind: models::ScopeKind::Match,
                     range: TextRange::new(26.into(), 28.into()),
                 },
-                value: models::Value {
-                    kind: models::ValueKind::Match,
-                    range: None,
-                },
+                value: models::Value { kind: models::ValueKind::Match, range: None },
             },
         ];
         let r_symbols = [models::RSymbol {
@@ -745,10 +683,7 @@ mod tests {
             },
             special: models::SpecialKind::Normal,
         }];
-        assert_eq!(
-            ast.l_symbols,
-            models::LSymbols::new(l_symbols.into_iter())
-        );
+        assert_eq!(ast.l_symbols, models::LSymbols::new(l_symbols.into_iter()));
         assert_eq!(ast.r_symbols, r_symbols,);
     }
 
@@ -758,16 +693,10 @@ mod tests {
         let mut ast = parse(text.chars(), HashSet::new());
         assert_eq!(
             ast.filtered_errors().collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(1.into(), 2.into()),
-                Undefined("x".to_string())
-            )],
+            vec![&Error::new(TextRange::new(1.into(), 2.into()), Undefined("x".to_string()))],
         );
         ast.update_globals(vec!["x".to_owned()]);
-        assert_eq!(
-            ast.filtered_errors().collect::<Vec<&Error>>(),
-            Vec::<&Error>::new()
-        )
+        assert_eq!(ast.filtered_errors().collect::<Vec<&Error>>(), Vec::<&Error>::new())
     }
 
     #[test]
@@ -776,10 +705,7 @@ mod tests {
         let ast = parse(text.chars(), HashSet::new());
         assert_eq!(
             ast.filtered_errors().collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(4.into(), 5.into()),
-                Undefined("x".to_string())
-            )],
+            vec![&Error::new(TextRange::new(4.into(), 5.into()), Undefined("x".to_string()))],
         );
     }
 
@@ -789,10 +715,7 @@ mod tests {
         let ast = parse(text.chars(), HashSet::new());
         assert_eq!(
             ast.errors().collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(8.into(), 11.into()),
-                Undefined("abc".to_string())
-            )],
+            vec![&Error::new(TextRange::new(8.into(), 11.into()), Undefined("abc".to_string()))],
         );
     }
 
@@ -810,9 +733,7 @@ mod tests {
     fn check_symbol_ok() {
         let text = "(var a {}) (a) (a.b) (a.b:c)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
             Vec::<&Error>::new()
         );
     }
@@ -821,41 +742,23 @@ mod tests {
     fn check_symbol_error() {
         let text = "(var a {}) (print a.b:c)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(18.into(), 23.into()),
-                MethodNotAllowed
-            )]
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(18.into(), 23.into()), MethodNotAllowed)]
         );
 
         let text = "(var a {}) (var a.b 1) (var a:b 1)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .filtered_errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
             vec![
-                &Error::new(
-                    TextRange::new(16.into(), 19.into()),
-                    FieldAndMethodNotAllowed,
-                ),
-                &Error::new(
-                    TextRange::new(28.into(), 31.into()),
-                    FieldAndMethodNotAllowed,
-                ),
+                &Error::new(TextRange::new(16.into(), 19.into()), FieldAndMethodNotAllowed,),
+                &Error::new(TextRange::new(28.into(), 31.into()), FieldAndMethodNotAllowed,),
             ]
         );
 
         let text = "(var x {})(lambda x:a [])";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(18.into(), 21.into()),
-                MethodNotAllowed,
-            ),]
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(18.into(), 21.into()), MethodNotAllowed,),]
         );
     }
 
@@ -863,9 +766,7 @@ mod tests {
     fn check_whitespace_ok() {
         let text = "(+)(+)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
             Vec::<&Error>::new()
         );
     }
@@ -874,23 +775,13 @@ mod tests {
     fn check_whitespace_error() {
         let text = "(fn x[] (+))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .filtered_errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(5.into(), 6.into()),
-                MissingWhitespace
-            )],
+            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(5.into(), 6.into()), MissingWhitespace)],
         );
         let text = "(, 1)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(1.into(), 2.into()),
-                MacroWhitespace,
-            )],
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(1.into(), 2.into()), MacroWhitespace,)],
         );
     }
 
@@ -898,14 +789,9 @@ mod tests {
     fn check_empty_list_error() {
         let text = "( ) (1)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
             vec![
-                &Error::new(
-                    TextRange::new(5.into(), 6.into()),
-                    Unexpected(SyntaxKind::INTEGER)
-                ),
+                &Error::new(TextRange::new(5.into(), 6.into()), Unexpected(SyntaxKind::INTEGER)),
                 &Error::new(TextRange::new(0.into(), 3.into()), EmptyList),
             ],
         );
@@ -915,9 +801,7 @@ mod tests {
     fn check_literal_call() {
         let text = "((-)) ((var x 1)) (table) (local z :s) (z)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .filtered_errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
             vec![
                 &Error::new(
                     TextRange::new(1.into(), 4.into()),
@@ -936,18 +820,10 @@ mod tests {
     fn check_varargs_position() {
         let text = "(fn [... ... a] (+))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .filtered_errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
             vec![
-                &Error::new(
-                    TextRange::new(9.into(), 12.into()),
-                    Unexpected(SyntaxKind::VARARG),
-                ),
-                &Error::new(
-                    TextRange::new(13.into(), 14.into()),
-                    Unexpected(SyntaxKind::SYMBOL),
-                ),
+                &Error::new(TextRange::new(9.into(), 12.into()), Unexpected(SyntaxKind::VARARG),),
+                &Error::new(TextRange::new(13.into(), 14.into()), Unexpected(SyntaxKind::SYMBOL),),
                 &Error::new(TextRange::new(5.into(), 8.into()), MultiVarargs,),
                 &Error::new(TextRange::new(9.into(), 12.into()), MultiVarargs,),
             ]
@@ -958,13 +834,8 @@ mod tests {
     fn check_undefined_varargs() {
         let text = "... (fn a [] (print ...))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(20.into(), 23.into()),
-                UnexpectedVarargs,
-            )]
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(20.into(), 23.into()), UnexpectedVarargs,)]
         );
     }
 
@@ -972,18 +843,10 @@ mod tests {
     fn check_global_conflict() {
         let text = "(local x 1) (global x 1) (local x 1)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .filtered_errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
             vec![
-                &Error::new(
-                    TextRange::new(7.into(), 8.into()),
-                    GlobalConflict,
-                ),
-                &Error::new(
-                    TextRange::new(20.into(), 21.into()),
-                    GlobalConflict,
-                ),
+                &Error::new(TextRange::new(7.into(), 8.into()), GlobalConflict,),
+                &Error::new(TextRange::new(20.into(), 21.into()), GlobalConflict,),
             ]
         );
     }
@@ -993,10 +856,7 @@ mod tests {
         let text = "(global x 1)";
         assert_eq!(
             parse(text.chars(), HashSet::new()).errors().next().unwrap(),
-            &Error::new(
-                TextRange::new(1.into(), 7.into()),
-                Deprecated("1.1.0", "_G table"),
-            ),
+            &Error::new(TextRange::new(1.into(), 7.into()), Deprecated("1.1.0", "_G table"),),
         );
     }
 
@@ -1004,32 +864,23 @@ mod tests {
     fn check_suppressed_errors() {
         let text = "(set x 1) `(set ,x)";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
-            vec![&Error::new(
-                TextRange::new(5.into(), 6.into()),
-                Undefined("x".to_string())
-            ),]
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            vec![&Error::new(TextRange::new(5.into(), 6.into()), Undefined("x".to_string())),]
         )
     }
 
     fn definition(text: &str, offset: u32) -> Option<LSymbol> {
-        parse(text.chars(), HashSet::new()).definition(offset).and_then(
-            |def| match def {
-                Definition::Symbol(s, _) => Some(s),
-                _ => None,
-            },
-        )
+        parse(text.chars(), HashSet::new()).definition(offset).and_then(|def| match def {
+            Definition::Symbol(s, _) => Some(s),
+            _ => None,
+        })
     }
 
     #[test]
     fn check_arglist() {
         let text = "(fn a [] {:fnl/arglist [b c & d]} (+))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .errors()
-                .collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
             Vec::<&Error>::new()
         );
     }
@@ -1115,6 +966,22 @@ mod tests {
     }
 
     #[test]
+    fn test_document_symbols() {
+        let text = "(fn foo [x] (let [y 1] (+ x y)))";
+        let ast = parse(text.chars(), HashSet::new());
+        let symbols = ast.document_symbols();
+        assert_eq!(symbols.len(), 2);
+        // FuncAst::bindings returns params then name
+        assert_eq!(symbols[0].name, "x");
+        assert_eq!(symbols[1].name, "foo");
+
+        let x_children = symbols[0].children.as_ref().unwrap();
+        assert_eq!(x_children[0].name, "y");
+        let foo_children = symbols[1].children.as_ref().unwrap();
+        assert_eq!(foo_children[0].name, "y");
+    }
+
+    #[test]
     fn definition_empty() {
         let text = "(local z 1)(print z)";
         assert_eq!(
@@ -1177,17 +1044,15 @@ mod tests {
 
         let (mut symbols, reserved) = ast.completion(15, None);
         assert!(symbols.any(|symbol| symbol.token.text == "abc"));
-        assert!(reserved
-            .into_iter()
-            .find_map(|(kind, words)| {
-                if kind == models::CompletionKind::Keyword {
-                    Some(words)
-                } else {
-                    None
-                }
-            })
-            .unwrap()
-            .contains(&"lambda"));
+        assert!(
+            reserved
+                .into_iter()
+                .find_map(|(kind, words)| {
+                    if kind == models::CompletionKind::Keyword { Some(words) } else { None }
+                })
+                .unwrap()
+                .contains(&"lambda")
+        );
     }
 
     #[test]
@@ -1216,14 +1081,12 @@ mod tests {
     fn docstring() {
         let text = "(fn a [] :a-func (print))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .docstring(TextRange::new(4.into(), 5.into())),
+            parse(text.chars(), HashSet::new()).docstring(TextRange::new(4.into(), 5.into())),
             Some("a-func".to_string()),
         );
         let text = "(fn a [] {:fnl/docstring :helloAgain} (+))";
         assert_eq!(
-            parse(text.chars(), HashSet::new())
-                .docstring(TextRange::new(4.into(), 5.into())),
+            parse(text.chars(), HashSet::new()).docstring(TextRange::new(4.into(), 5.into())),
             Some("helloAgain".to_string()),
         );
     }
@@ -1231,8 +1094,7 @@ mod tests {
     #[test]
     fn check_return() {
         let text = "{local a 1} {:b 2 : a :c d (+ 1 1) 3 none 4}";
-        let map =
-            parse(text.chars(), HashSet::new()).return_kv_table().unwrap();
+        let map = parse(text.chars(), HashSet::new()).return_kv_table().unwrap();
         for (k, v) in map.into_iter() {
             match k.as_str() {
                 "a" => assert_eq!(v.syntax().text(), "a"),

@@ -1,10 +1,7 @@
 use rowan::{TextRange, TextSize};
 
 pub(crate) fn text_range(range: &std::ops::Range<usize>) -> TextRange {
-    TextRange::new(
-        TextSize::from(range.start as u32),
-        TextSize::from(range.end as u32),
-    )
+    TextRange::new(TextSize::from(range.start as u32), TextSize::from(range.end as u32))
 }
 
 pub(crate) fn text_range_with_offset(

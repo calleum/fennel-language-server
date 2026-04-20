@@ -1,8 +1,13 @@
-use rowan::{ast::AstNode, TextRange};
+use rowan::{TextRange, ast::AstNode};
 
 use crate::{
-    ast::{eval, func::FuncAst, models, nodes::*},
     SyntaxKind, SyntaxNode,
+    ast::{
+        eval,
+        func::FuncAst,
+        models::{self, ScopeExtend},
+        nodes::*,
+    },
 };
 
 #[rustfmt::skip]
@@ -18,27 +23,18 @@ ast_assoc!(
     ]
 );
 
-pub(crate) trait Binding:
-    rowan::ast::AstNode<Language = crate::FennelLanguage>
-{
+pub(crate) trait Binding: rowan::ast::AstNode<Language = crate::FennelLanguage> {
     fn bindings(&self) -> Option<Vec<models::LSymbol>>;
 
     fn target_node(&self, target: SyntaxKind) -> Option<SyntaxNode> {
         self.syntax().children().find(|n| n.kind() == target)
     }
 
-    fn target_nodes(
-        &self,
-        target: SyntaxKind,
-    ) -> Box<dyn Iterator<Item = SyntaxNode>> {
+    fn target_nodes(&self, target: SyntaxKind) -> Box<dyn Iterator<Item = SyntaxNode>> {
         Box::new(self.syntax().children().filter(move |n| n.kind() == target))
     }
 
-    fn target_child_node(
-        &self,
-        parent: SyntaxKind,
-        target: SyntaxKind,
-    ) -> Option<SyntaxNode> {
+    fn target_child_node(&self, parent: SyntaxKind, target: SyntaxKind) -> Option<SyntaxNode> {
         self.syntax()
             .children()
             .find(|n| n.kind() == parent)?
@@ -79,8 +75,7 @@ pub(crate) trait Binding:
             let (id, ..) = symbol.id()?;
             // NOTE: should not pretend symbol pairs with value
             let value_node = node.last_child();
-            let value = if let Some(override_value_kind) = override_value_kind
-            {
+            let value = if let Some(override_value_kind) = override_value_kind {
                 models::Value {
                     kind: override_value_kind,
                     range: value_node.map(|n| n.text_range()),
@@ -161,10 +156,8 @@ impl Binding for Global {
 
 impl Binding for Let {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let nodes = self.target_child_nodes(
-            SyntaxKind::N_ASSIGN_TABLE,
-            SyntaxKind::N_ASSIGN_PAIR,
-        )?;
+        let nodes =
+            self.target_child_nodes(SyntaxKind::N_ASSIGN_TABLE, SyntaxKind::N_ASSIGN_PAIR)?;
         let symbols = nodes
             .into_iter()
             .filter_map(|n| {
@@ -204,10 +197,7 @@ impl Binding for ImportMacros {
 
 impl Binding for WithOpen {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let nodes = self.target_child_nodes(
-            SyntaxKind::N_NV_PAIR_TABLE,
-            SyntaxKind::N_NV_PAIR,
-        )?;
+        let nodes = self.target_child_nodes(SyntaxKind::N_NV_PAIR_TABLE, SyntaxKind::N_NV_PAIR)?;
         let symbols = nodes
             .into_iter()
             .filter_map(|n| {
@@ -227,10 +217,7 @@ impl Binding for WithOpen {
 
 impl Binding for Each {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let nodes = self.target_child_nodes(
-            SyntaxKind::N_EACH_TABLE,
-            SyntaxKind::N_ITERATION,
-        )?;
+        let nodes = self.target_child_nodes(SyntaxKind::N_EACH_TABLE, SyntaxKind::N_ITERATION)?;
         let symbols = nodes
             .into_iter()
             .filter_map(|n| {
@@ -251,10 +238,7 @@ impl Binding for Each {
 impl Binding for For {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
         self._bindings(
-            self.target_child_node(
-                SyntaxKind::N_FOR_TABLE,
-                SyntaxKind::N_ITERATION_VALUE,
-            )?,
+            self.target_child_node(SyntaxKind::N_FOR_TABLE, SyntaxKind::N_ITERATION_VALUE)?,
             models::ScopeKind::IterValue,
             ScopeExtend::Current,
             Some(models::ValueKind::Number),
@@ -265,10 +249,8 @@ impl Binding for For {
 
 impl Binding for Icollect {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let nodes = self.target_child_nodes(
-            SyntaxKind::N_ICOLLECT_TABLE,
-            SyntaxKind::N_ITERATION,
-        )?;
+        let nodes =
+            self.target_child_nodes(SyntaxKind::N_ICOLLECT_TABLE, SyntaxKind::N_ITERATION)?;
         let symbols = nodes
             .into_iter()
             .filter_map(|n| {
@@ -289,10 +271,7 @@ impl Binding for Icollect {
 impl Binding for Fcollect {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
         self._bindings(
-            self.target_child_node(
-                SyntaxKind::N_FCOLLECT_TABLE,
-                SyntaxKind::N_ITERATION_VALUE,
-            )?,
+            self.target_child_node(SyntaxKind::N_FCOLLECT_TABLE, SyntaxKind::N_ITERATION_VALUE)?,
             models::ScopeKind::IterValue,
             ScopeExtend::Current,
             Some(models::ValueKind::Number),
@@ -303,10 +282,8 @@ impl Binding for Fcollect {
 
 impl Binding for Collect {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let nodes = self.target_child_nodes(
-            SyntaxKind::N_COLLECT_TABLE,
-            SyntaxKind::N_ITERATION,
-        )?;
+        let nodes =
+            self.target_child_nodes(SyntaxKind::N_COLLECT_TABLE, SyntaxKind::N_ITERATION)?;
         let symbols = nodes
             .into_iter()
             .filter_map(|n| {
@@ -327,20 +304,15 @@ impl Binding for Collect {
 impl Binding for Accumulate {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
         let mut symbols = self._bindings(
-            self.target_child_node(
-                SyntaxKind::N_ACCUMULATE_TABLE,
-                SyntaxKind::N_ACCUMULATOR,
-            )?,
+            self.target_child_node(SyntaxKind::N_ACCUMULATE_TABLE, SyntaxKind::N_ACCUMULATOR)?,
             models::ScopeKind::AccuValue,
             ScopeExtend::Current,
             Some(models::ValueKind::Unknown),
             models::ValueKind::Unknown,
         )?;
 
-        let iter_nodes = self.target_child_nodes(
-            SyntaxKind::N_ACCUMULATE_TABLE,
-            SyntaxKind::N_ITERATION,
-        )?;
+        let iter_nodes =
+            self.target_child_nodes(SyntaxKind::N_ACCUMULATE_TABLE, SyntaxKind::N_ITERATION)?;
         let iters = iter_nodes.into_iter().filter_map(|n| {
             self._bindings(
                 n,
@@ -382,10 +354,7 @@ impl Binding for FuncAst {
         });
 
         let param_nodes = self
-            .target_child_nodes(
-                SyntaxKind::N_PARAM_TABLE,
-                SyntaxKind::N_ASSIGN_PATTERN,
-            )
+            .target_child_nodes(SyntaxKind::N_PARAM_TABLE, SyntaxKind::N_ASSIGN_PATTERN)
             .unwrap_or_default();
         let params = param_nodes
             .into_iter()
@@ -401,18 +370,12 @@ impl Binding for FuncAst {
             .flatten();
 
         let varargs = self.varargs().map(|n| models::LSymbol {
-            token: models::Token {
-                text: "...".to_owned(),
-                range: n.text_range(),
-            },
+            token: models::Token { text: "...".to_owned(), range: n.text_range() },
             scope: models::Scope {
                 kind: models::ScopeKind::Param,
                 range: self.syntax().text_range(),
             },
-            value: models::Value {
-                kind: models::ValueKind::Param,
-                range: None,
-            },
+            value: models::Value { kind: models::ValueKind::Param, range: None },
         });
 
         let mut symbols: Vec<models::LSymbol> = params.collect();
@@ -428,31 +391,19 @@ impl Binding for FuncAst {
 
 impl Binding for Macro {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let name_node = self
-            .syntax()
-            .children()
-            .find(|n| n.kind() == SyntaxKind::N_MACRO_NAME);
+        let name_node = self.syntax().children().find(|n| n.kind() == SyntaxKind::N_MACRO_NAME);
 
         let name = name_node.map(|n| models::LSymbol {
-            token: models::Token {
-                text: n.text().to_string(),
-                range: n.text_range(),
-            },
+            token: models::Token { text: n.text().to_string(), range: n.text_range() },
             scope: models::Scope {
                 kind: models::ScopeKind::Macro,
                 range: ScopeExtend::Outer.range(self.syntax()),
             },
-            value: models::Value {
-                kind: models::ValueKind::Macro,
-                range: None,
-            },
+            value: models::Value { kind: models::ValueKind::Macro, range: None },
         });
 
         let param_nodes = self
-            .target_child_nodes(
-                SyntaxKind::N_PARAM_TABLE,
-                SyntaxKind::N_ASSIGN_PATTERN,
-            )
+            .target_child_nodes(SyntaxKind::N_PARAM_TABLE, SyntaxKind::N_ASSIGN_PATTERN)
             .unwrap_or_default();
         let params = param_nodes
             .into_iter()
@@ -485,10 +436,7 @@ impl Binding for Macros {
                 let key = k?;
                 let text = key.cast_string()?.0;
                 Some(models::LSymbol {
-                    token: models::Token {
-                        text,
-                        range: key.syntax().text_range(),
-                    },
+                    token: models::Token { text, range: key.syntax().text_range() },
                     scope: models::Scope {
                         kind: models::ScopeKind::Macro,
                         range: ScopeExtend::Outer.range(self.syntax()),
@@ -530,10 +478,7 @@ impl Binding for BindingListAst {
 ast_assoc!(MatchAst, [Match, Catch, MatchTry]);
 
 impl Match {
-    fn l_or_r_symbols(
-        &self,
-        l_symbols: &mut models::LSymbols,
-    ) -> Vec<models::RSymbol> {
+    fn l_or_r_symbols(&self, l_symbols: &mut models::LSymbols) -> Vec<models::RSymbol> {
         let mut r_symbols = vec![];
         for (p, ns) in self
             .syntax()
@@ -549,10 +494,8 @@ impl Match {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(
-                    node.first_token().unwrap().parent().unwrap(),
-                )
-                .and_then(|n| n.id());
+                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
+                    .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
@@ -567,17 +510,11 @@ impl Match {
                                 kind: models::ScopeKind::Match,
                                 range: scope_range,
                             },
-                            value: models::Value {
-                                kind: models::ValueKind::Match,
-                                range: None,
-                            },
+                            value: models::Value { kind: models::ValueKind::Match, range: None },
                         },
                     );
                 } else {
-                    r_symbols.push(models::RSymbol {
-                        special: models::SpecialKind::Normal,
-                        token,
-                    });
+                    r_symbols.push(models::RSymbol { special: models::SpecialKind::Normal, token });
                 }
             }
         }
@@ -586,10 +523,7 @@ impl Match {
 }
 
 impl Catch {
-    fn l_or_r_symbols(
-        &self,
-        l_symbols: &mut models::LSymbols,
-    ) -> Vec<models::RSymbol> {
+    fn l_or_r_symbols(&self, l_symbols: &mut models::LSymbols) -> Vec<models::RSymbol> {
         let mut r_symbols = vec![];
         for (p, ns) in self
             .syntax()
@@ -605,10 +539,8 @@ impl Catch {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(
-                    node.first_token().unwrap().parent().unwrap(),
-                )
-                .and_then(|n| n.id());
+                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
+                    .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
@@ -623,17 +555,11 @@ impl Catch {
                                 kind: models::ScopeKind::Catch,
                                 range: scope_range,
                             },
-                            value: models::Value {
-                                kind: models::ValueKind::Match,
-                                range: None,
-                            },
+                            value: models::Value { kind: models::ValueKind::Match, range: None },
                         },
                     );
                 } else {
-                    r_symbols.push(models::RSymbol {
-                        special: models::SpecialKind::Normal,
-                        token,
-                    });
+                    r_symbols.push(models::RSymbol { special: models::SpecialKind::Normal, token });
                 }
             }
         }
@@ -642,10 +568,7 @@ impl Catch {
 }
 
 impl MatchTry {
-    fn l_or_r_symbols(
-        &self,
-        l_symbols: &mut models::LSymbols,
-    ) -> Vec<models::RSymbol> {
+    fn l_or_r_symbols(&self, l_symbols: &mut models::LSymbols) -> Vec<models::RSymbol> {
         let mut r_symbols = vec![];
         for (_p, ns) in self
             .syntax()
@@ -654,11 +577,7 @@ impl MatchTry {
             .filter_map(|n| {
                 let c = n.first_child();
                 if let Some(c) = c {
-                    if c.kind() == SyntaxKind::N_CATCH_LIST {
-                        None
-                    } else {
-                        Some((n, c))
-                    }
+                    if c.kind() == SyntaxKind::N_CATCH_LIST { None } else { Some((n, c)) }
                 } else {
                     None
                 }
@@ -669,10 +588,8 @@ impl MatchTry {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(
-                    node.first_token().unwrap().parent().unwrap(),
-                )
-                .and_then(|n| n.id());
+                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
+                    .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
@@ -687,17 +604,11 @@ impl MatchTry {
                                 kind: models::ScopeKind::MatchTry,
                                 range: scope_range,
                             },
-                            value: models::Value {
-                                kind: models::ValueKind::Match,
-                                range: None,
-                            },
+                            value: models::Value { kind: models::ValueKind::Match, range: None },
                         },
                     );
                 } else {
-                    r_symbols.push(models::RSymbol {
-                        special: models::SpecialKind::Normal,
-                        token,
-                    });
+                    r_symbols.push(models::RSymbol { special: models::SpecialKind::Normal, token });
                 }
             }
         }
@@ -706,10 +617,7 @@ impl MatchTry {
 }
 
 impl MatchAst {
-    pub(crate) fn l_or_r_symbols(
-        &self,
-        l_symbols: &mut models::LSymbols,
-    ) -> Vec<models::RSymbol> {
+    pub(crate) fn l_or_r_symbols(&self, l_symbols: &mut models::LSymbols) -> Vec<models::RSymbol> {
         match self {
             Self::Match(n) => n.l_or_r_symbols(l_symbols),
             Self::Catch(n) => n.l_or_r_symbols(l_symbols),
@@ -742,36 +650,21 @@ impl ScopeAst {
 
 impl MatchTry {
     fn end(&self) -> rowan::TextSize {
-        let clause = self
-            .syntax()
-            .children()
-            .filter(|n| n.kind() == SyntaxKind::N_MATCH_TRY_CLAUSE);
-        if let Some(last_clause) = clause.last() {
-            if last_clause.first_child().unwrap().kind()
-                == SyntaxKind::N_CATCH_LIST
-            {
-                return last_clause.text_range().start();
-            }
+        let clause =
+            self.syntax().children().filter(|n| n.kind() == SyntaxKind::N_MATCH_TRY_CLAUSE);
+        if let Some(last_clause) = clause.last()
+            && last_clause.first_child().unwrap().kind() == SyntaxKind::N_CATCH_LIST
+        {
+            return last_clause.text_range().start();
         }
         self.syntax().text_range().end()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum ScopeExtend {
-    Current,
-    This(SyntaxNode),
-    Outer,
-    #[allow(unused)]
-    File, // useless?
-}
-
-impl ScopeExtend {
+impl models::ScopeExtend {
     fn range(&self, node: &SyntaxNode) -> TextRange {
         let scope_end = match self {
-            Self::Current => {
-                node.ancestors().find_map(ScopeAst::cast).unwrap().end()
-            }
+            Self::Current => node.ancestors().find_map(ScopeAst::cast).unwrap().end(),
             Self::This(node) => node.text_range().end(),
             Self::Outer => {
                 let mut scopes = node.ancestors().filter_map(ScopeAst::cast);
@@ -782,9 +675,7 @@ impl ScopeExtend {
                     scopes.next().unwrap().syntax().text_range().end()
                 }
             }
-            Self::File => {
-                node.ancestors().last().and_then(ScopeAst::cast).unwrap().end()
-            }
+            Self::File => node.ancestors().last().and_then(ScopeAst::cast).unwrap().end(),
         };
         let start = node.text_range().end();
         TextRange::new(start, scope_end)

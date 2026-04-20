@@ -13,11 +13,7 @@ pub(crate) struct Token {
 
 impl Token {
     #[allow(unused)]
-    pub(crate) fn new(
-        kind: SyntaxKind,
-        text: &str,
-        range: Range<usize>,
-    ) -> Self {
+    pub(crate) fn new(kind: SyntaxKind, text: &str, range: Range<usize>) -> Self {
         Self { kind, text: text.to_string(), range }
     }
 }
@@ -31,9 +27,7 @@ pub(crate) struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn new(
-        mut source: Box<dyn Iterator<Item = char> + 'a>,
-    ) -> Self {
+    pub(crate) fn new(mut source: Box<dyn Iterator<Item = char> + 'a>) -> Self {
         let peek = source.next();
 
         Self { source, offset: 0, current: String::new(), peek }
@@ -42,7 +36,7 @@ impl<'a> Lexer<'a> {
 
 static TABLE: LazyLock<HashMap<String, SyntaxKind>> = LazyLock::new(|| {
     let mut table: HashMap<String, SyntaxKind> = HashMap::new();
-    crate::syntax::TOEKN.iter().for_each(|(t, s)| {
+    crate::syntax::TOKEN.iter().for_each(|(t, s)| {
         table.insert(t.to_string(), *s);
     });
     table
@@ -61,16 +55,14 @@ static RE_FLOAT: LazyLock<Regex> = LazyLock::new(|| {
 
 const BOUND: [char; 8] = ['(', ')', '[', ']', '{', '}', ',', '`'];
 
-static RE_INTEGER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!("^{}$", r#"[+-]?(0x)?[0-9][0-9_]*"#)).unwrap()
-});
+static RE_INTEGER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("^{}$", r#"[+-]?(0x)?[0-9][0-9_]*"#)).unwrap());
 
 static RE_COLON_STRING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!("^{}$", r#":[^"'~;@]+"#)).unwrap());
 
-static RE_SYMBOL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!("^{}$", r#"[^.:#"'~;,@`&][^"'~;,@`&]*"#)).unwrap()
-});
+static RE_SYMBOL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("^{}$", r#"[^.:#"'~;,@`&][^"'~;,@`&]*"#)).unwrap());
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token;
@@ -119,11 +111,7 @@ impl<'a> Iterator for Lexer<'a> {
             }
             TokenKind::Hash => {
                 self.peek = self.source.next();
-                if self
-                    .peek
-                    .map(|p| p.is_whitespace() || p == ')')
-                    .unwrap_or(true)
-                {
+                if self.peek.map(|p| p.is_whitespace() || p == ')').unwrap_or(true) {
                     SyntaxKind::LENGTH
                 } else {
                     SyntaxKind::HASHFN
@@ -145,11 +133,7 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                     escaped = false;
                 }
-                if found {
-                    SyntaxKind::QUOTE_STRING
-                } else {
-                    SyntaxKind::ERROR
-                }
+                if found { SyntaxKind::QUOTE_STRING } else { SyntaxKind::ERROR }
             }
             TokenKind::Comment => {
                 while let Some(c) = self.source.next() {
@@ -224,8 +208,7 @@ pub(crate) fn validate_symbol(symbol: &str) -> bool {
         if lexer.next().unwrap().kind != SyntaxKind::END {
             return false;
         }
-        return !Vec::from(include!("static/reserved"))
-            .contains(&token.text.as_str());
+        return !Vec::from(include!("static/reserved")).contains(&token.text.as_str());
     }
     false
 }
@@ -278,11 +261,7 @@ mod tests {
             "?我❤️logos#$%^*-+=/|\\ local locals :into :intobreach logos:into \
              _",
             &[
-                Token::new(
-                    SyntaxKind::SYMBOL,
-                    "?我❤️logos#$%^*-+=/|\\",
-                    00..26,
-                ),
+                Token::new(SyntaxKind::SYMBOL, "?我❤️logos#$%^*-+=/|\\", 00..26),
                 Token::new(SyntaxKind::KEYWORD_LOCAL, "local", 27..32),
                 Token::new(SyntaxKind::SYMBOL, "locals", 33..39),
                 Token::new(SyntaxKind::KEYWORD_INTO, ":into", 40..45),
@@ -374,11 +353,7 @@ mod tests {
                 Token::new(SyntaxKind::L_PAREN, "(", 0..1),
                 Token::new(SyntaxKind::SYMBOL, "print", 1..6),
                 Token::new(SyntaxKind::COLON_STRING, ":logos", 7..13),
-                Token::new(
-                    SyntaxKind::COMMENT,
-                    "; this is comment)\n",
-                    13..32,
-                ),
+                Token::new(SyntaxKind::COMMENT, "; this is comment)\n", 13..32),
                 Token::new(SyntaxKind::R_PAREN, ")", 33..34),
             ],
         );

@@ -7,10 +7,7 @@ macro_rules! ast_node {
             type Language = crate::FennelLanguage;
 
             fn cast(syntax_node: SyntaxNode) -> Option<Self> {
-                syntax_node
-                    .kind()
-                    .eq(&SyntaxKind::$syntax)
-                    .then(|| Self(syntax_node))
+                syntax_node.kind().eq(&SyntaxKind::$syntax).then(|| Self(syntax_node))
             }
 
             fn can_cast(syntax: SyntaxKind) -> bool {

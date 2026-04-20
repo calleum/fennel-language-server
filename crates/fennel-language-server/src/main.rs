@@ -11,7 +11,7 @@ use std::{
 
 use clap::Parser;
 use dashmap::DashMap;
-use fennel_parser::{models, Ast};
+use fennel_parser::{Ast, models};
 use helper::*;
 use ropey::Rope;
 use tokio::{
@@ -22,6 +22,8 @@ use tower_lsp::{
     jsonrpc::{Error, Result},
     lsp_types::*,
 };
+
+use crate::view::value_kind_to_symbol_kind;
 
 #[derive(Debug)]
 struct Backend {
@@ -36,14 +38,23 @@ struct Backend {
 
 #[tower_lsp::async_trait]
 impl tower_lsp::LanguageServer for Backend {
-    async fn initialize(
-        &self,
-        params: InitializeParams,
-    ) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         if let Some(folders) = params.workspace_folders {
             folders.into_iter().for_each(|folder| {
                 self.workspace_map.insert(folder.uri, folder.name);
             });
+        }
+
+        if let Some(settings) = params.initialization_options
+            && let Ok(config) = serde_json::from_value::<config::Configuration>(settings)
+        {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Initial config from options: {:?}", config),
+                )
+                .await;
+            *self.config.write().unwrap() = config;
         }
 
         Ok(InitializeResult {
@@ -56,16 +67,15 @@ impl tower_lsp::LanguageServer for Backend {
                     TextDocumentSyncKind::INCREMENTAL,
                 )),
                 workspace: Some(WorkspaceServerCapabilities {
-                    workspace_folders: Some(
-                        WorkspaceFoldersServerCapabilities {
-                            supported: Some(true),
-                            change_notifications: None,
-                        },
-                    ),
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: None,
+                    }),
                     file_operations: None,
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
@@ -73,9 +83,7 @@ impl tower_lsp::LanguageServer for Backend {
                     trigger_characters: Some(vec![".".into(), ":".into()]),
                     ..Default::default()
                 }),
-                code_action_provider: Some(
-                    CodeActionProviderCapability::Simple(true),
-                ),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -98,9 +106,10 @@ impl tower_lsp::LanguageServer for Backend {
                     models::ValueKind::Require(Some(file)) => {
                         self.find_file(&uri, file).map_or_else(
                             || {
-                                Ok(Some(GotoDefinitionResponse::Scalar(
-                                    Location::new(uri.clone(), range),
-                                )))
+                                Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                                    uri.clone(),
+                                    range,
+                                ))))
                             },
                             |new_uri| {
                                 Ok(Some(GotoDefinitionResponse::Array(vec![
@@ -110,24 +119,19 @@ impl tower_lsp::LanguageServer for Backend {
                             },
                         )
                     }
-                    _ => Ok(Some(GotoDefinitionResponse::Scalar(
-                        Location::new(uri, range),
-                    ))),
+                    _ => Ok(Some(GotoDefinitionResponse::Scalar(Location::new(uri, range)))),
                 }
             }
             Some(fennel_parser::Definition::FileSymbol(path, symbol)) => {
                 let range = lsp_range(&doc, symbol.token.range)?;
-                let res = self.find_file(&uri, path).map(|uri| {
-                    GotoDefinitionResponse::Scalar(Location::new(uri, range))
-                });
+                let res = self
+                    .find_file(&uri, path)
+                    .map(|uri| GotoDefinitionResponse::Scalar(Location::new(uri, range)));
                 Ok(res)
             }
             Some(fennel_parser::Definition::File(path)) => {
                 let res = self.find_file(&uri, path).map(|uri| {
-                    GotoDefinitionResponse::Scalar(Location::new(
-                        uri,
-                        lsp_range_head(),
-                    ))
+                    GotoDefinitionResponse::Scalar(Location::new(uri, lsp_range_head()))
                 });
                 Ok(res)
             }
@@ -140,18 +144,41 @@ impl tower_lsp::LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let _ast =
-            self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
-        let _doc =
-            self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
 
-        Err(Error::method_not_found())
+        let symbols = ast.document_symbols();
+
+        fn to_lsp_symbol(
+            doc: &Rope,
+            sym: &fennel_parser::AstDocumentSymbol,
+        ) -> Option<DocumentSymbol> {
+            let range = lsp_range(doc, sym.range).ok()?;
+            let selection_range = lsp_range(doc, sym.selection_range).ok()?;
+
+            let children = sym.children.as_ref().map(|children| {
+                children.iter().filter_map(|child| to_lsp_symbol(doc, child)).collect()
+            });
+
+            #[allow(deprecated)]
+            Some(DocumentSymbol {
+                name: sym.name.clone(),
+                detail: sym.detail.clone(),
+                kind: value_kind_to_symbol_kind(sym.kind.clone()),
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children,
+            })
+        }
+
+        let lsp_symbols: Vec<DocumentSymbol> =
+            symbols.iter().filter_map(|s| to_lsp_symbol(&doc, s)).collect();
+        Ok(Some(DocumentSymbolResponse::Nested(lsp_symbols)))
     }
 
-    async fn references(
-        &self,
-        params: ReferenceParams,
-    ) -> Result<Option<Vec<Location>>> {
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
@@ -174,10 +201,7 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(locations))
     }
 
-    async fn rename(
-        &self,
-        params: RenameParams,
-    ) -> Result<Option<WorkspaceEdit>> {
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
@@ -187,9 +211,9 @@ impl tower_lsp::LanguageServer for Backend {
         if !ast.validate_name(&params.new_name) {
             return Err(Error::invalid_params("Illegal identifier name"));
         }
-        let ranges = ast.reference(offset).ok_or_else(|| {
-            Error::invalid_params("No references found at position")
-        })?;
+        let ranges = ast
+            .reference(offset)
+            .ok_or_else(|| Error::invalid_params("No references found at position"))?;
         if ranges.is_empty() {
             return Ok(None);
         }
@@ -224,14 +248,9 @@ impl tower_lsp::LanguageServer for Backend {
             "{} {}{}{}",
             scope_kind,
             text,
-            if value_kind.is_empty() {
-                "".to_owned()
-            } else {
-                " : ".to_owned() + value_kind
-            },
+            if value_kind.is_empty() { "".to_owned() } else { " : ".to_owned() + value_kind },
             if let Some(literal) = ast.literal_value(symbol.value) {
-                let prefix =
-                    if literal.contains('\n') { " =\n" } else { " = " };
+                let prefix = if literal.contains('\n') { " =\n" } else { " = " };
                 prefix.to_owned() + &literal
             } else {
                 "".to_owned()
@@ -261,10 +280,7 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(Hover { contents, range: Some(range) }))
     }
 
-    async fn completion(
-        &self,
-        params: CompletionParams,
-    ) -> Result<Option<CompletionResponse>> {
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
@@ -293,10 +309,7 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completions)))
     }
 
-    async fn code_action(
-        &self,
-        params: CodeActionParams,
-    ) -> Result<Option<CodeActionResponse>> {
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri;
         let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
         let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
@@ -308,13 +321,9 @@ impl tower_lsp::LanguageServer for Backend {
             let action = match action {
                 fennel_parser::Action::ConvertToColonString(s) => {
                     let mut map = HashMap::new();
-                    map.insert(
-                        uri.clone(),
-                        vec![TextEdit::new(range, s.to_owned())],
-                    );
+                    map.insert(uri.clone(), vec![TextEdit::new(range, s.to_owned())]);
                     CodeActionOrCommand::CodeAction(CodeAction {
-                        title: "Convert string to start with a colon"
-                            .to_string(),
+                        title: "Convert string to start with a colon".to_string(),
                         kind: Some(CodeActionKind::REFACTOR),
                         edit: Some(WorkspaceEdit::new(map)),
                         ..Default::default()
@@ -322,13 +331,9 @@ impl tower_lsp::LanguageServer for Backend {
                 }
                 fennel_parser::Action::ConvertToQuoteString(s) => {
                     let mut map = HashMap::new();
-                    map.insert(
-                        uri.clone(),
-                        vec![TextEdit::new(range, s.to_owned())],
-                    );
+                    map.insert(uri.clone(), vec![TextEdit::new(range, s.to_owned())]);
                     CodeActionOrCommand::CodeAction(CodeAction {
-                        title: "Convert string to double-quotes form"
-                            .to_string(),
+                        title: "Convert string to double-quotes form".to_string(),
                         kind: Some(CodeActionKind::REFACTOR),
                         edit: Some(WorkspaceEdit::new(map)),
                         ..Default::default()
@@ -363,11 +368,9 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         let ast = fennel_parser::parse(text.chars(), globals);
-        self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), true)
-            .await;
+        self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), true).await;
 
-        self.on_save_or_open_errors
-            .insert(uri.clone(), ast.on_save_errors().cloned().collect());
+        self.on_save_or_open_errors.insert(uri.clone(), ast.on_save_errors().cloned().collect());
 
         self.ast_map.insert(uri, ast);
     }
@@ -399,14 +402,7 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         let ast = fennel_parser::parse(doc.chars(), globals);
-        self.publish_diagnostics(
-            &doc,
-            uri.clone(),
-            &ast,
-            Some(version),
-            false,
-        )
-        .await;
+        self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), false).await;
 
         self.ast_map.insert(uri, ast);
     }
@@ -421,14 +417,7 @@ impl tower_lsp::LanguageServer for Backend {
         if doc.is_err() {
             return;
         }
-        self.publish_diagnostics(
-            &doc.unwrap(),
-            uri,
-            &ast.unwrap(),
-            None,
-            true,
-        )
-        .await;
+        self.publish_diagnostics(&doc.unwrap(), uri, &ast.unwrap(), None, true).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -436,10 +425,7 @@ impl tower_lsp::LanguageServer for Backend {
         self.free_doc(&uri);
     }
 
-    async fn did_change_workspace_folders(
-        &self,
-        params: DidChangeWorkspaceFoldersParams,
-    ) {
+    async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
         params.event.added.iter().for_each(|r| {
             self.workspace_map.insert(r.uri.clone(), r.name.clone());
         });
@@ -448,39 +434,23 @@ impl tower_lsp::LanguageServer for Backend {
         });
     }
 
-    async fn did_change_configuration(
-        &self,
-        params: DidChangeConfigurationParams,
-    ) {
-        match <config::Configuration as serde::Deserialize>::deserialize(
-            params.settings,
-        ) {
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        match <config::Configuration as serde::Deserialize>::deserialize(params.settings) {
             Ok(config) => {
+                self.client
+                    .log_message(MessageType::INFO, format!("Config updated: {:?}", config))
+                    .await;
                 *self.config.write().unwrap() = config.clone();
                 for mut r in self.ast_map.iter_mut() {
                     let ast = r.value_mut();
-                    ast.update_globals(
-                        config.fennel.diagnostics.globals.clone(),
-                    );
+                    ast.update_globals(config.fennel.diagnostics.globals.clone());
                     let uri = r.key();
                     let doc = self.doc_map.get(uri).unwrap();
-                    self.publish_diagnostics(
-                        &doc,
-                        uri.clone(),
-                        r.value(),
-                        None,
-                        false,
-                    )
-                    .await;
+                    self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
                 }
             }
             Err(e) => {
-                self.client
-                    .log_message(
-                        MessageType::ERROR,
-                        format!("Invalid config: {}", e),
-                    )
-                    .await;
+                self.client.log_message(MessageType::ERROR, format!("Invalid config: {}", e)).await;
             }
         }
     }
@@ -498,21 +468,17 @@ impl Backend {
         if on_save_or_open {
             self.on_save_or_open_errors
                 .insert(uri.clone(), ast.on_save_errors().cloned().collect());
-        } else if let Some(mut errs) =
-            self.on_save_or_open_errors.get_mut(&uri)
-        {
-            let new_errors: Vec<&fennel_parser::Error> =
-                ast.on_save_errors().collect();
+        } else if let Some(mut errs) = self.on_save_or_open_errors.get_mut(&uri) {
+            let new_errors: Vec<&fennel_parser::Error> = ast.on_save_errors().collect();
             errs.retain(|e| new_errors.contains(&e))
         };
 
-        let errors: Vec<fennel_parser::Error> = if let Some(on_save_errors) =
-            self.on_save_or_open_errors.get(&uri)
-        {
-            ast.errors().chain(on_save_errors.iter()).cloned().collect()
-        } else {
-            ast.errors().cloned().collect()
-        };
+        let errors: Vec<fennel_parser::Error> =
+            if let Some(on_save_errors) = self.on_save_or_open_errors.get(&uri) {
+                ast.errors().chain(on_save_errors.iter()).cloned().collect()
+            } else {
+                ast.errors().cloned().collect()
+            };
 
         let diagnostics = errors.into_iter().flat_map(|error| {
             lsp_range(doc, error.range).map(|range| {
@@ -528,9 +494,7 @@ impl Backend {
                 )
             })
         });
-        self.client
-            .publish_diagnostics(uri, diagnostics.collect(), version)
-            .await;
+        self.client.publish_diagnostics(uri, diagnostics.collect(), version).await;
     }
 
     fn free_doc(&self, uri: &Url) {
@@ -544,15 +508,10 @@ impl Backend {
 
         let check_exist = |rel: &Url, ext: &str, init: bool| -> Option<Url> {
             let path = if init { path.join("init") } else { path.clone() };
-            if let Ok(url) =
-                rel.join(path.with_extension(ext).to_str().unwrap())
+            if let Ok(url) = rel.join(path.with_extension(ext).to_str().unwrap())
+                && std::fs::metadata(url.path()).map(|m| m.is_file()).unwrap_or(false)
             {
-                if std::fs::metadata(url.path())
-                    .map(|m| m.is_file())
-                    .unwrap_or(false)
-                {
-                    return Some(url);
-                }
+                return Some(url);
             }
             None
         };
@@ -575,8 +534,7 @@ impl Backend {
             };
 
             let uri_fnl = uri.join("fnl/").unwrap();
-            check_exist(&uri_fnl, "fnl", false)
-                .or_else(|| check_exist(&uri_fnl, "fnl", true))
+            check_exist(&uri_fnl, "fnl", false).or_else(|| check_exist(&uri_fnl, "fnl", true))
         });
 
         workspace_file.or(library_file).or_else(|| {
@@ -593,9 +551,7 @@ impl Backend {
 async fn main() {
     let cli = cli::Cli::parse();
     let (read, write) = match &cli.cmd {
-        Some(cli::Command::Lsp { cmd: cli::LspCommand::Stdio }) | None => {
-            stdio()
-        }
+        Some(cli::Command::Lsp { cmd: cli::LspCommand::Stdio }) | None => stdio(),
         Some(cli::Command::Lsp { cmd: cli::LspCommand::Tcp { address } }) => {
             tcp_listen(address).await
         }
@@ -619,11 +575,103 @@ fn stdio() -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {
     (Box::new(read), Box::new(write))
 }
 
-async fn tcp_listen(
-    address: &str,
-) -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {
+async fn tcp_listen(address: &str) -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {
     let listener = TcpListener::bind(address).await.unwrap();
     let (stream, _) = listener.accept().await.unwrap();
     let (read, write) = tokio::io::split(stream);
     (Box::new(read), Box::new(write))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+    use tower_lsp::LanguageServer;
+
+    #[tokio::test]
+    async fn test_find_library_file() {
+        let dir = tempdir().unwrap();
+        let lib_path = dir.path().join("my-lib");
+        let lua_dir = lib_path.join("lua/my-lib");
+        fs::create_dir_all(&lua_dir).unwrap();
+        let init_lua = lua_dir.join("init.lua");
+        fs::write(&init_lua, "return {}").unwrap();
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+        });
+        let backend = service.inner();
+
+        // Configure the library path
+        let lib_url = Url::from_directory_path(&lib_path).unwrap();
+        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+
+        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        let target_path = PathBuf::from("my-lib");
+
+        let resolved = backend.find_file(&base_url, target_path);
+        assert!(resolved.is_some());
+        let resolved_url = resolved.unwrap();
+        assert!(resolved_url.path().ends_with("my-lib/lua/my-lib/init.lua"));
+    }
+
+    #[tokio::test]
+    async fn test_print_document_symbols() {
+        let code = "(local x 1)\n(fn my-func [a] (+ a x))\n(global my-global \"hello\")";
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+        });
+        let backend = service.inner();
+        let uri = Url::parse("file:///test.fnl").unwrap();
+
+        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
+        let ast = fennel_parser::parse(code.chars(), HashSet::new());
+        backend.ast_map.insert(uri.clone(), ast);
+
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.document_symbol(params).await.unwrap().unwrap();
+
+        println!("\n--- Document Symbols Output ---");
+        println!("{code}");
+        fn print_symbol(sym: &DocumentSymbol, indent: usize) {
+            println!(
+                "{:indent$}Symbol: {:<12} | Kind: {:?} | Range: {:?}..{:?}",
+                "",
+                sym.name,
+                sym.kind,
+                sym.range.start,
+                sym.range.end,
+                indent = indent
+            );
+            if let Some(children) = &sym.children {
+                for child in children {
+                    print_symbol(child, indent + 2);
+                }
+            }
+        }
+
+        if let DocumentSymbolResponse::Nested(symbols) = response {
+            for sym in symbols {
+                print_symbol(&sym, 0);
+            }
+        }
+        println!("-------------------------------\n");
+    }
 }

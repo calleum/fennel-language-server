@@ -1,18 +1,19 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use rowan::{ast::AstNode, TextRange};
+use rowan::{TextRange, ast::AstNode};
 
 use crate::{
-    ast::{
-        bind::MatchAst,
-        error::{Provider, Suppress, SuppressErrorKind},
-        eval,
-        eval::EvalAst,
-        func, models,
-    },
     Error,
     ErrorKind::*,
     SyntaxKind, SyntaxNode, SyntaxToken,
+    ast::{
+        bind::MatchAst,
+        error::{Provider, Suppress},
+        eval,
+        eval::EvalAst,
+        func,
+        models::{self, SuppressErrorKind},
+    },
 };
 
 ast_node!(Root, ROOT);
@@ -81,17 +82,9 @@ impl Symbol {
         let prefix_is_comma = first_token.kind() == SyntaxKind::COMMA;
         if prefix_is_comma {
             let first_token = nodes.next()?;
-            Some((
-                first_token.as_token()?.to_owned().into(),
-                true,
-                nodes.next().is_none(),
-            ))
+            Some((first_token.as_token()?.to_owned().into(), true, nodes.next().is_none()))
         } else {
-            Some((
-                first_token.to_owned().into(),
-                false,
-                nodes.next().is_none(),
-            ))
+            Some((first_token.to_owned().into(), false, nodes.next().is_none()))
         }
     }
 }
@@ -102,47 +95,33 @@ impl Root {
         eval::EvalAst::cast(last_node)
     }
 
-    pub(crate) fn return_kv_table(
-        &self,
-    ) -> Option<HashMap<String, eval::EvalAst>> {
+    pub(crate) fn return_kv_table(&self) -> Option<HashMap<String, eval::EvalAst>> {
         self.return_value()
             .and_then(|eval_ast| eval_ast.cast_kv_table())
             .map(|kv_table| kv_table.cast_hashmap())
     }
 
     pub(crate) fn resources(&self) -> impl Iterator<Item = PathBuf> {
-        self.syntax()
-            .descendants()
-            .filter_map(SymbolCall::cast)
-            .filter_map(|n| n.require())
+        self.syntax().descendants().filter_map(SymbolCall::cast).filter_map(|n| n.require())
     }
 
     pub(crate) fn provide_errors(&self) -> impl Iterator<Item = Error> {
-        self.syntax()
-            .descendants()
-            .filter_map(Provider::cast)
-            .flat_map(|n| n.errors())
-            .flatten()
+        self.syntax().descendants().filter_map(Provider::cast).flat_map(|n| n.errors()).flatten()
     }
 
     pub(crate) fn suppress_errors(
         &self,
     ) -> impl Iterator<Item = (TextRange, Vec<SuppressErrorKind>)> {
-        self.syntax()
-            .descendants()
-            .filter_map(Suppress::cast)
-            .flat_map(|n| n.suppress())
+        self.syntax().descendants().filter_map(Suppress::cast).flat_map(|n| n.suppress())
     }
 
     pub(crate) fn r_symbols(&self) -> Vec<models::RSymbol> {
         let mut count_hashfn = 0;
         let mut count_macro = 0;
 
-        let event_macro = |kind: SyntaxKind| -> bool {
-            Macro::can_cast(kind) || Macros::can_cast(kind)
-        };
-        let event_hashfn =
-            |kind: SyntaxKind| -> bool { kind == SyntaxKind::N_MACRO_HASH };
+        let event_macro =
+            |kind: SyntaxKind| -> bool { Macro::can_cast(kind) || Macros::can_cast(kind) };
+        let event_hashfn = |kind: SyntaxKind| -> bool { kind == SyntaxKind::N_MACRO_HASH };
         self.syntax()
             .preorder()
             .flat_map(|event| match event {
@@ -154,11 +133,9 @@ impl Root {
                     if event_hashfn(n_kind) {
                         count_hashfn += 1;
                     }
-                    let refer_symbol = ReferSymbol::cast(n.clone())
-                        .and_then(|n| n.name())
-                        .map(|(token, starts_with_comma)| {
-                            if count_hashfn > 0 && token.text.starts_with('$')
-                            {
+                    let refer_symbol = ReferSymbol::cast(n.clone()).and_then(|n| n.name()).map(
+                        |(token, starts_with_comma)| {
+                            if count_hashfn > 0 && token.text.starts_with('$') {
                                 return models::RSymbol {
                                     token,
                                     special: models::SpecialKind::HashArg,
@@ -168,29 +145,23 @@ impl Root {
                                 if starts_with_comma {
                                     return models::RSymbol {
                                         token,
-                                        special:
-                                            models::SpecialKind::MacroUnquote,
+                                        special: models::SpecialKind::MacroUnquote,
                                     };
                                 } else {
                                     return models::RSymbol {
                                         token,
-                                        special:
-                                            models::SpecialKind::MacroWrap,
+                                        special: models::SpecialKind::MacroWrap,
                                     };
                                 }
                             }
-                            models::RSymbol {
-                                token,
-                                special: models::SpecialKind::Normal,
-                            }
-                        });
+                            models::RSymbol { token, special: models::SpecialKind::Normal }
+                        },
+                    );
                     let fn_name = || {
-                        func::FuncAst::cast(n).and_then(|f| f.r_name()).map(
-                            |s| models::RSymbol {
-                                special: models::SpecialKind::Normal,
-                                token: s,
-                            },
-                        )
+                        func::FuncAst::cast(n).and_then(|f| f.r_name()).map(|s| models::RSymbol {
+                            special: models::SpecialKind::Normal,
+                            token: s,
+                        })
                     };
                     refer_symbol.or_else(fn_name)
                 }
@@ -208,10 +179,7 @@ impl Root {
             .collect()
     }
 
-    pub(crate) fn correct_symbols(
-        &self,
-        l_symbols: &mut models::LSymbols,
-    ) -> Vec<models::RSymbol> {
+    pub(crate) fn correct_symbols(&self, l_symbols: &mut models::LSymbols) -> Vec<models::RSymbol> {
         let mut r_symbols = vec![];
         for r in self
             .syntax()
@@ -225,9 +193,7 @@ impl Root {
     }
 
     // TODO: refactor
-    pub(crate) fn delimiter_whitespace_errors(
-        &self,
-    ) -> impl Iterator<Item = Error> {
+    pub(crate) fn delimiter_whitespace_errors(&self) -> impl Iterator<Item = Error> {
         const DELIMITER: &[SyntaxKind] = &[
             SyntaxKind::L_PAREN,
             SyntaxKind::L_BRACE,
@@ -274,10 +240,8 @@ impl ReferSymbol {
         let first_node = nodes.next()?;
         let first_token = first_node.as_token()?;
         let prefix_is_comma = first_token.kind() == SyntaxKind::COMMA;
-        let prev_is_comma = first_token
-            .prev_token()
-            .map(|t| t.kind() == SyntaxKind::COMMA)
-            .unwrap_or(false);
+        let prev_is_comma =
+            first_token.prev_token().map(|t| t.kind() == SyntaxKind::COMMA).unwrap_or(false);
         // TODO: improve syntax
         if prefix_is_comma {
             Some((nodes.next()?.as_token()?.to_owned().into(), true))
@@ -297,9 +261,7 @@ impl KvTable {
             .map(|n| {
                 (
                     n.first_child().unwrap(),
-                    n.children()
-                        .skip(1)
-                        .find(|n| n.kind() == SyntaxKind::N_VALUE),
+                    n.children().skip(1).find(|n| n.kind() == SyntaxKind::N_VALUE),
                 )
             })
             .find_map(|(key_node, value_node)| {
@@ -308,33 +270,24 @@ impl KvTable {
                     .and_then(eval::EvalAst::cast)
                     .and_then(|n| n.cast_string());
                 if k_str.is_some_and(|(s, _)| s == key) {
-                    value_node
-                        .and_then(|v| v.first_child())
-                        .and_then(EvalAst::cast)
+                    value_node.and_then(|v| v.first_child()).and_then(EvalAst::cast)
                 } else {
                     None
                 }
             })
     }
 
-    pub(crate) fn iter(
-        &self,
-    ) -> impl Iterator<Item = (Option<EvalAst>, Option<EvalAst>)> {
-        self.syntax()
-            .children()
-            .filter(|n| n.kind() == SyntaxKind::N_KV_PAIR)
-            .map(|n| {
-                (
-                    n.first_child()
-                        .and_then(|n| n.first_child())
-                        .and_then(EvalAst::cast),
-                    n.children()
-                        .skip(1)
-                        .find(|n| n.kind() == SyntaxKind::N_VALUE)
-                        .and_then(|n| n.first_child())
-                        .and_then(EvalAst::cast),
-                )
-            })
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (Option<EvalAst>, Option<EvalAst>)> {
+        self.syntax().children().filter(|n| n.kind() == SyntaxKind::N_KV_PAIR).map(|n| {
+            (
+                n.first_child().and_then(|n| n.first_child()).and_then(EvalAst::cast),
+                n.children()
+                    .skip(1)
+                    .find(|n| n.kind() == SyntaxKind::N_VALUE)
+                    .and_then(|n| n.first_child())
+                    .and_then(EvalAst::cast),
+            )
+        })
     }
 
     // skip non-string key
@@ -381,8 +334,7 @@ impl SymbolCall {
 
     pub(crate) fn require(&self) -> Option<PathBuf> {
         if self.is_require() {
-            let deepest_node =
-                self.syntax().children().nth(1)?.first_token()?.parent()?;
+            let deepest_node = self.syntax().children().nth(1)?.first_token()?.parent()?;
             get_ancestor::<Literal>(&deepest_node)?.cast_path()
         } else {
             None

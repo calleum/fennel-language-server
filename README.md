@@ -10,53 +10,74 @@ Use it just for an encouraging try.
 
 ## Installation
 
-Because it is written in pure Rust language,
-the server should be installed via `cargo`.
+### Via Mason (Recommended for Neovim)
+
+If you are using Neovim, the easiest way to install `fennel-language-server` is via [mason.nvim](https://github.com/williamboman/mason.nvim).
+
+```vim
+:MasonInstall fennel-language-server
+```
+
+### Via Cargo
+
+Because it is written in Rust, you can also install it via `cargo`.
 
 ```sh
 cargo install --git https://github.com/rydesun/fennel-language-server
 ```
 
 No demand for the Fennel environment. You don't even need Fennel runtime!
-(It sounds a little weird but that's the truth)
 
 ## Integration
 
-**NOTE**: The executable file is now named `fennel-language-server`.
-The former name `fennel-ls` has been abandoned.
+**NOTE**: The executable file is named `fennel-language-server`.
+The former name `fennel-ls` has been abandoned (and now refers to a different implementation).
 
 ### Neovim
 
-For Nvim user to setup `fennel-language-server` with `nvim-lspconfig`,
-add the following code to your configuration.
+`fennel-language-server` is natively supported by [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig).
+
+#### Basic Setup
 
 ```lua
-local lspconfig = require 'lspconfig'
-require 'lspconfig.configs'.fennel_language_server = {
-  default_config = {
-    -- replace it with true path
-    cmd = {'/PATH/TO/BINFILE'},
-    filetypes = {'fennel'},
-    single_file_support = true,
-    -- source code resides in directory `fnl/`
-    root_dir = lspconfig.util.root_pattern("fnl"),
-    settings = {
-      fennel = {
-        workspace = {
-          -- If you are using hotpot.nvim or aniseed,
-          -- make the server aware of neovim runtime files.
-          library = vim.api.nvim_list_runtime_paths(),
-        },
-        diagnostics = {
-          globals = {'vim'},
-        },
+require('lspconfig').fennel_language_server.setup({
+  settings = {
+    fennel = {
+      workspace = {
+        -- If you are using hotpot.nvim or aniseed,
+        -- make the server aware of neovim runtime files.
+        library = vim.api.nvim_list_runtime_paths(),
+      },
+      diagnostics = {
+        globals = {'vim'},
       },
     },
   },
-}
-
-lspconfig.fennel_language_server.setup{}
+})
 ```
+
+#### nfnl Setup
+
+If you are using [nfnl](https://github.com/Olical/nfnl), use the following configuration:
+
+```lua
+require('lspconfig').fennel_language_server.setup({
+  -- Ensure the LSP starts for nfnl projects
+  root_dir = require('lspconfig').util.root_pattern(".nfnl.fnl", "fnl", ".git"),
+  settings = {
+    fennel = {
+      workspace = {
+        library = vim.api.nvim_get_runtime_file("", true),
+      },
+      diagnostics = {
+        globals = {"vim"},
+      },
+    },
+  },
+})
+```
+
+*Note: If you have installed the server via Mason, ensure you have [mason-lspconfig.nvim](https://github.com/williamboman/mason-lspconfig.nvim) installed to automatically set up the path.*
 
 ## Status
 
@@ -69,6 +90,8 @@ Features are partially completed:
 - [x] `References`
 - [x] `Hover`
 - [x] `Rename`
+- [x] `Code Action`
+- [x] `Document Symbol`
 - [ ] `Formatter`
 
 **All features don't work properly on multi-symbols.**

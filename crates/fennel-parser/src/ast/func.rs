@@ -1,26 +1,17 @@
 use rowan::ast::AstNode;
 
 use super::eval::EvalAst;
-use crate::{
-    ast::nodes::*, models, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken,
-};
+use crate::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, ast::nodes::*, models};
 
 ast_assoc!(FuncAst, [Func, Lambda]);
 
 impl FuncAst {
     pub(crate) fn name(&self) -> Option<(SyntaxNode, bool)> {
-        let name = self
-            .syntax()
-            .children()
-            .find(|n| n.kind() == SyntaxKind::N_FN_NAME)?;
+        let name = self.syntax().children().find(|n| n.kind() == SyntaxKind::N_FN_NAME)?;
 
         let is_pure = !name.children_with_tokens().any(|t| {
-            [
-                SyntaxKind::SYMBOL_METHOD,
-                SyntaxKind::SYMBOL_FIELD,
-                SyntaxKind::ERROR,
-            ]
-            .contains(&t.kind())
+            [SyntaxKind::SYMBOL_METHOD, SyntaxKind::SYMBOL_FIELD, SyntaxKind::ERROR]
+                .contains(&t.kind())
         });
 
         Some((name, is_pure))
@@ -29,21 +20,13 @@ impl FuncAst {
     #[allow(unused)]
     pub(crate) fn l_name(&self) -> Option<models::Token> {
         self.name().and_then(|(name, is_pure)| {
-            if is_pure {
-                name.first_token().map(models::Token::from)
-            } else {
-                None
-            }
+            if is_pure { name.first_token().map(models::Token::from) } else { None }
         })
     }
 
     pub(crate) fn r_name(&self) -> Option<models::Token> {
         self.name().and_then(|(name, is_pure)| {
-            if is_pure {
-                None
-            } else {
-                name.first_token().map(models::Token::from)
-            }
+            if is_pure { None } else { name.first_token().map(models::Token::from) }
         })
     }
 
@@ -60,13 +43,8 @@ impl FuncAst {
     }
 
     pub(crate) fn metadata(&self) -> Option<SyntaxNode> {
-        let body = self
-            .syntax()
-            .children()
-            .skip(1)
-            .find(|n| n.kind() == SyntaxKind::N_BODY)?;
-        let mut sexp =
-            body.children().filter(|n| n.kind() == SyntaxKind::N_SEXP);
+        let body = self.syntax().children().skip(1).find(|n| n.kind() == SyntaxKind::N_BODY)?;
+        let mut sexp = body.children().filter(|n| n.kind() == SyntaxKind::N_SEXP);
 
         let metadata = sexp.next()?;
         // docstring can't be last

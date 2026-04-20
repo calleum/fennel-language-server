@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-use crate::{parser::sets::TokenSet, SyntaxKind};
+use crate::{SyntaxKind, parser::sets::TokenSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Rule {
@@ -27,9 +27,7 @@ impl Rule {
 
         let kind = self.expect;
         match self.notation {
-            Repeat(l) | Repeat1(l) => {
-                Some(Rule { expect: kind, notation: Repeat(l) })
-            }
+            Repeat(l) | Repeat1(l) => Some(Rule { expect: kind, notation: Repeat(l) }),
             RepeatPeek(l1, l2) | Repeat1Peek(l1, l2) => {
                 Some(Rule { expect: kind, notation: RepeatPeek(l1, l2) })
             }
@@ -52,15 +50,9 @@ macro_rules! notation {
         crate::parser::bnf::Rule { expect: $kind, notation: Repeat1($set) }
     };
     (($kind:ident ** $set:expr, $set2:expr)) => {
-        crate::parser::bnf::Rule {
-            expect: $kind,
-            notation: RepeatPeek($set, $set2),
-        }
+        crate::parser::bnf::Rule { expect: $kind, notation: RepeatPeek($set, $set2) }
     };
     (($kind:ident ++ $set:expr, $set2:expr)) => {
-        crate::parser::bnf::Rule {
-            expect: $kind,
-            notation: Repeat1Peek($set, $set2),
-        }
+        crate::parser::bnf::Rule { expect: $kind, notation: Repeat1Peek($set, $set2) }
     };
 }

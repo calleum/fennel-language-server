@@ -11,9 +11,29 @@ use crate::SyntaxToken;
 
 // TODO: TextRange as key
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct LSymbols(pub(crate) BTreeMap<u32, LSymbol>);
+pub struct LSymbols(pub(crate) BTreeMap<u32, LSymbol>);
+
+pub type Globals = Vec<(CompletionKind, Vec<&'static str>)>;
 
 pub(crate) type RSymbols = Vec<RSymbol>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SuppressErrorKind {
+    Unused,
+    Unterminated,
+    Undefined,
+    AllUnexpected,
+    Unexpected(crate::SyntaxKind),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ScopeExtend {
+    Current,
+    This(crate::SyntaxNode),
+    Outer,
+    #[allow(unused)]
+    File, // useless?
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LSymbol {
@@ -95,8 +115,7 @@ pub enum SpecialKind {
 
 impl LSymbol {
     pub(crate) fn contains_token(&self, r_symbol: &Token) -> bool {
-        self.token.text == r_symbol.text
-            && self.scope.range.contains_range(r_symbol.range)
+        self.token.text == r_symbol.text && self.scope.range.contains_range(r_symbol.range)
     }
 }
 
@@ -110,8 +129,7 @@ impl LSymbols {
     }
 
     pub(crate) fn nearest(&self, token: &Token) -> Option<&LSymbol> {
-        self.range(token.range.start().into())
-            .find(|l_symbol| l_symbol.contains_token(token))
+        self.range(token.range.start().into()).find(|l_symbol| l_symbol.contains_token(token))
     }
 
     pub(crate) fn get(&self, start: u32) -> Option<&LSymbol> {
@@ -133,6 +151,69 @@ pub enum CompletionKind {
     Field,
     Operator,
     Var,
+}
+
+pub struct AstDocumentSymbol {
+    /// The name of this symbol.
+    pub name: String,
+    /// More detail for this symbol, e.g the signature of a function. If not provided the
+    /// name is used.
+    pub detail: Option<String>,
+    /// The kind of this symbol.
+    pub kind: ValueKind,
+    /// The range enclosing this symbol not including leading/trailing whitespace but everything else
+    /// like comments. This information is typically used to determine if the the clients cursor is
+    /// inside the symbol to reveal in the symbol in the UI.
+    pub range: TextRange,
+    /// The range that should be selected and revealed when this symbol is being picked, e.g the name of a function.
+    /// Must be contained by the the `range`.
+    pub selection_range: TextRange,
+    /// Children of this symbol, e.g. properties of a class.
+    pub children: Option<Vec<AstDocumentSymbol>>,
+}
+
+impl AstDocumentSymbol {
+    pub fn new(
+        name: String,
+        detail: Option<String>,
+        kind: ValueKind,
+        range: TextRange,
+        selection_range: TextRange,
+        children: Option<Vec<AstDocumentSymbol>>,
+    ) -> Self {
+        Self { name, detail, kind, range, selection_range, children }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstSymbolInformation {
+    /// The name of this symbol.
+    pub name: String,
+
+    /// The kind of this symbol.
+    pub kind: ValueKind,
+
+    /// The location of this symbol.
+    pub location: TextRange,
+}
+
+impl AstSymbolInformation {
+    pub fn new(name: String, kind: ValueKind, location: TextRange) -> Self {
+        Self { name, kind, location }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Definition {
+    Symbol(LSymbol, bool),
+    FileSymbol(PathBuf, LSymbol),
+    File(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Action {
+    ConvertToColonString(String),
+    ConvertToQuoteString(String),
 }
 
 impl fmt::Display for ValueKind {

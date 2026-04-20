@@ -12,10 +12,10 @@ use rowan::{GreenNode, GreenNodeBuilder};
 use sets::TokenSet;
 
 use crate::{
+    SyntaxKind::{self, *},
     errors::{Error, ErrorKind::*},
     lexer::{Lexer, Token},
     syntax::lists::*,
-    SyntaxKind::{self, *},
 };
 
 pub struct Parser<'p> {
@@ -63,11 +63,8 @@ impl<'p> Parser<'p> {
     }
 
     fn peek(&mut self) -> Token {
-        if let Some(token) = self
-            .token_queue
-            .iter()
-            .skip(1)
-            .find(|token| !OUTBAND.contains(&token.kind))
+        if let Some(token) =
+            self.token_queue.iter().skip(1).find(|token| !OUTBAND.contains(&token.kind))
         {
             return token.to_owned();
         }
@@ -703,14 +700,12 @@ impl<'p> Parser<'p> {
         match cur_rule.expect {
             N_MATCH_TRY_CLAUSE
                 if sets::first_set(N_MATCH_TRY_LIST, cur_token.kind)
-                    && (sets::TokenSet::MATCH_PATTERN
-                        .contains(self.peek().kind)
+                    && (sets::TokenSet::MATCH_PATTERN.contains(self.peek().kind)
                         || self.peek().kind == KEYWORD_WHERE) =>
             {
                 self.expand(
                     cur_token,
-                    vec![notation!((N_MATCH_TRY_LIST)), notation!((N_SEXP))]
-                        .into_iter(),
+                    vec![notation!((N_MATCH_TRY_LIST)), notation!((N_SEXP))].into_iter(),
                 );
                 return;
             }
@@ -718,10 +713,7 @@ impl<'p> Parser<'p> {
                 if sets::first_set(N_CATCH_LIST, cur_token.kind)
                     && sets::TokenSet::CATCH.contains(self.peek().kind) =>
             {
-                self.expand(
-                    cur_token,
-                    vec![notation!((N_CATCH_LIST))].into_iter(),
-                );
+                self.expand(cur_token, vec![notation!((N_CATCH_LIST))].into_iter());
                 return;
             }
             _ => {}
@@ -731,11 +723,7 @@ impl<'p> Parser<'p> {
         self.recover_error(cur_token)
     }
 
-    fn expand(
-        &mut self,
-        cur_token: Token,
-        rules: impl DoubleEndedIterator<Item = Rule>,
-    ) {
+    fn expand(&mut self, cur_token: Token, rules: impl DoubleEndedIterator<Item = Rule>) {
         let cur_rule = self.rule_stack.pop().unwrap();
         if let Some(r) = cur_rule.expand() {
             self.rule_stack.push(r)
@@ -760,19 +748,17 @@ impl<'p> Parser<'p> {
             R_BRACE => Some(KV_TABLE),
             R_BRACKET => Some(TABLE),
             _ => None,
-        } {
-            if self.early_close(list, &cur_token).is_some() {
-                return;
-            };
-        }
+        } && self.early_close(list, &cur_token).is_some()
+        {
+            return;
+        };
 
         // We got something fun.
         if (cur_token.kind == SyntaxKind::KEYWORD_INTO
             || cur_token.kind == SyntaxKind::KEYWORD_UNTIL)
             && cur_token.text.starts_with(':')
         {
-            self.token_queue.get_mut(0).unwrap().kind =
-                SyntaxKind::COLON_STRING;
+            self.token_queue.get_mut(0).unwrap().kind = SyntaxKind::COLON_STRING;
             // Check it again.
             return;
         }
@@ -784,25 +770,16 @@ impl<'p> Parser<'p> {
             // will clear rule_stack
             self.missing_close(cur_token);
         } else {
-            self.errors.push(Error::new(
-                text_range(&cur_token.range),
-                Unexpected(cur_token.kind),
-            ));
+            self.errors.push(Error::new(text_range(&cur_token.range), Unexpected(cur_token.kind)));
             self.step();
         }
     }
 
-    fn early_close(
-        &mut self,
-        matched: &[SyntaxKind],
-        cur_token: &Token,
-    ) -> Option<()> {
+    fn early_close(&mut self, matched: &[SyntaxKind], cur_token: &Token) -> Option<()> {
         let (range, _total) = self.find_close(matched)?;
         let mut count = 0;
         for _i in range.rev() {
-            if let Some(Rule { expect: n, notation: Close(prev) }) =
-                self.rule_stack.pop()
-            {
+            if let Some(Rule { expect: n, notation: Close(prev) }) = self.rule_stack.pop() {
                 self.builder.finish_node();
                 count += 1;
                 if LIST.iter().any(|n| *n != N_LIST && *n == cur_token.kind)
@@ -811,10 +788,7 @@ impl<'p> Parser<'p> {
                     // the first one
                     || count == 1
                 {
-                    self.errors.push(Error::new(
-                        text_range(&cur_token.range),
-                        Unterminated(n),
-                    ));
+                    self.errors.push(Error::new(text_range(&cur_token.range), Unterminated(n)));
                     if let Some(range) = prev {
                         self.errors.push(Error::new(range, Unterminated(n)))
                     }
@@ -835,10 +809,8 @@ impl<'p> Parser<'p> {
                 }
             }
         }
-        self.errors.push(Error::new(
-            text_range_with_offset(&cur_token.range, (-1, -1)),
-            UnexpectedEof,
-        ));
+        self.errors
+            .push(Error::new(text_range_with_offset(&cur_token.range, (-1, -1)), UnexpectedEof));
     }
 
     fn parse_symbol(&mut self, cur_token: Token) {
@@ -874,23 +846,16 @@ impl<'p> Parser<'p> {
                 let offset = symbol.len();
                 self.builder.token(ERROR.into(), &cur_text[offset..]);
                 self.errors.push(Error::new(
-                    text_range_with_offset(
-                        &cur_token.range,
-                        (offset as i32, 0),
-                    ),
+                    text_range_with_offset(&cur_token.range, (offset as i32, 0)),
                     InvalidSymbol,
                 ));
             } else {
-                self.builder
-                    .token(SYMBOL_METHOD.into(), &(":".to_string() + str));
+                self.builder.token(SYMBOL_METHOD.into(), &(":".to_string() + str));
             }
         }
     }
 
-    fn find_close(
-        &self,
-        kinds: &[SyntaxKind],
-    ) -> Option<(std::ops::Range<usize>, usize)> {
+    fn find_close(&self, kinds: &[SyntaxKind]) -> Option<(std::ops::Range<usize>, usize)> {
         let mut total = 0;
         self.rule_stack
             .iter()
@@ -915,18 +880,12 @@ mod tests {
 
     #[test]
     fn parse_chunk() {
-        let text = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/testdata/parser/raw.fnl"
-        ));
+        let text = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/parser/raw.fnl"));
         let parser = Parser::new(text.chars());
         let syntax_node = SyntaxNode::new_root(parser.parse().green_node);
         assert_eq!(
             format!("{:#?}", syntax_node),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/testdata/parser/cst"
-            )),
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/parser/cst")),
         )
     }
 
@@ -954,14 +913,8 @@ mod tests {
             parser.parse().errors,
             vec![
                 Error::new(TextRange::new(3.into(), 7.into()), InvalidSymbol),
-                Error::new(
-                    TextRange::new(11.into(), 16.into()),
-                    InvalidSymbol
-                ),
-                Error::new(
-                    TextRange::new(20.into(), 24.into()),
-                    InvalidSymbol
-                ),
+                Error::new(TextRange::new(11.into(), 16.into()), InvalidSymbol),
+                Error::new(TextRange::new(20.into(), 24.into()), InvalidSymbol),
             ]
         );
     }
@@ -990,18 +943,9 @@ mod tests {
         assert_eq!(
             parsed.errors,
             vec![
-                Error::new(
-                    TextRange::new(11.into(), 14.into()),
-                    Unexpected(FLOAT)
-                ),
-                Error::new(
-                    TextRange::new(14.into(), 15.into()),
-                    Unexpected(R_BRACKET)
-                ),
-                Error::new(
-                    TextRange::new(18.into(), 19.into()),
-                    Unterminated(N_NV_PAIR)
-                ),
+                Error::new(TextRange::new(11.into(), 14.into()), Unexpected(FLOAT)),
+                Error::new(TextRange::new(14.into(), 15.into()), Unexpected(R_BRACKET)),
+                Error::new(TextRange::new(18.into(), 19.into()), Unterminated(N_NV_PAIR)),
             ]
         );
     }
@@ -1013,20 +957,14 @@ mod tests {
         let parsed = parser.parse();
         assert_eq!(
             parsed.errors,
-            vec![Error::new(
-                TextRange::new(21.into(), 22.into()),
-                Unterminated(N_UNTIL_CLAUSE)
-            ),]
+            vec![Error::new(TextRange::new(21.into(), 22.into()), Unterminated(N_UNTIL_CLAUSE)),]
         );
         let text = "(let [{: x} {:x :3} (print x))";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
         assert_eq!(
             parsed.errors,
-            vec![Error::new(
-                TextRange::new(29.into(), 30.into()),
-                Unterminated(N_ASSIGN_PAIR)
-            ),]
+            vec![Error::new(TextRange::new(29.into(), 30.into()), Unterminated(N_ASSIGN_PAIR)),]
         );
     }
 

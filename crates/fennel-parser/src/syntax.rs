@@ -241,9 +241,7 @@ impl fmt::Display for SyntaxKind {
 
             N_NV_PAIR => "name/value pair".into(),
             N_KV_PAIR => "key/value pair".into(),
-            N_IMPORT_MACROS_PAIR | N_IMPORT_MACROS_KV_PAIR | N_ASSIGN_PAIR => {
-                "binding pair".into()
-            }
+            N_IMPORT_MACROS_PAIR | N_IMPORT_MACROS_KV_PAIR | N_ASSIGN_PAIR => "binding pair".into(),
 
             N_SEQ_TABLE => "sequential table".into(),
 
@@ -266,18 +264,12 @@ impl fmt::Display for SyntaxKind {
                 if raw.starts_with("N_") {
                     format!(
                         "node `{}`",
-                        raw.strip_prefix("N_")
-                            .unwrap()
-                            .to_lowercase()
-                            .replace('_', " ")
+                        raw.strip_prefix("N_").unwrap().to_lowercase().replace('_', " ")
                     )
                 } else if raw.starts_with("KEYWORD_") {
                     format!(
                         "keyword `{}`",
-                        raw.strip_prefix("KEYWORD_")
-                            .unwrap()
-                            .to_lowercase()
-                            .replace('_', "-")
+                        raw.strip_prefix("KEYWORD_").unwrap().to_lowercase().replace('_', "-")
                     )
                 } else {
                     raw
@@ -291,8 +283,7 @@ impl fmt::Display for SyntaxKind {
 pub(crate) mod lists {
     use super::SyntaxKind::{self, *};
 
-    pub(crate) const L_DELIMITERS: &[SyntaxKind] =
-        &[L_BRACE, L_PAREN, L_BRACKET];
+    pub(crate) const L_DELIMITERS: &[SyntaxKind] = &[L_BRACE, L_PAREN, L_BRACKET];
     pub(crate) const OUTBAND: &[SyntaxKind] = &[WHITESPACE, COMMENT];
     pub(crate) const LIST: &[SyntaxKind] = &[
         N_LIST,
@@ -323,7 +314,7 @@ pub(crate) mod lists {
     ];
 }
 
-pub(crate) const TOEKN: &[(&str, SyntaxKind)] = &[
+pub(crate) const TOKEN: &[(&str, SyntaxKind)] = &[
     ("true", SyntaxKind::BOOL),
     ("false", SyntaxKind::BOOL),
     ("nil", SyntaxKind::NIL),

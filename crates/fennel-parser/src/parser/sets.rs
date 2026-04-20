@@ -29,18 +29,10 @@ impl TokenSet {
             Self::ITERATOR => [L_PAREN, BACKTICK, COMMA, HASHFN].contains(&k),
             Self::UNTIL => [KEYWORD_UNTIL, R_BRACKET].contains(&k),
             Self::COLLECT => [KEYWORD_COLLECT, R_BRACKET].contains(&k),
-            Self::MATCH_PATTERN => [
-                FLOAT,
-                INTEGER,
-                QUOTE_STRING,
-                COLON_STRING,
-                BOOL,
-                NIL,
-                SYMBOL,
-                L_BRACKET,
-                L_BRACE,
-            ]
-            .contains(&k),
+            Self::MATCH_PATTERN => {
+                [FLOAT, INTEGER, QUOTE_STRING, COLON_STRING, BOOL, NIL, SYMBOL, L_BRACKET, L_BRACE]
+                    .contains(&k)
+            }
             Self::CATCH => k == KEYWORD_CATCH,
         }
     }

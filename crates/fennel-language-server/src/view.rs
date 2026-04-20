@@ -1,5 +1,8 @@
-use fennel_parser::{models, ErrorKind};
-use tower_lsp::lsp_types::{CompletionItemKind, DiagnosticSeverity};
+use fennel_parser::{
+    ErrorKind,
+    models::{self, ValueKind},
+};
+use tower_lsp::lsp_types::{CompletionItemKind, DiagnosticSeverity, SymbolKind};
 
 pub(crate) fn scope_kind(kind: models::ScopeKind) -> &'static str {
     match kind {
@@ -18,6 +21,27 @@ pub(crate) fn scope_kind(kind: models::ScopeKind) -> &'static str {
         models::ScopeKind::Catch => "<match-try-catch pattern>",
         models::ScopeKind::IterValue => "<iteration pattern>",
         models::ScopeKind::AccuValue => "<accumulation value>",
+    }
+}
+
+pub fn value_kind_to_symbol_kind(val: ValueKind) -> SymbolKind {
+    match val {
+        ValueKind::Number => SymbolKind::NUMBER,
+        ValueKind::Func => SymbolKind::FUNCTION,
+        ValueKind::Param => SymbolKind::TYPE_PARAMETER,
+        ValueKind::MacroParam => SymbolKind::TYPE_PARAMETER,
+        ValueKind::Match => SymbolKind::OPERATOR,
+        ValueKind::String => SymbolKind::STRING,
+        ValueKind::Nil => SymbolKind::NULL,
+        ValueKind::Bool => SymbolKind::BOOLEAN,
+        ValueKind::SeqTable => SymbolKind::OBJECT,
+        ValueKind::KvTable => SymbolKind::OBJECT,
+        ValueKind::Macro => SymbolKind::FUNCTION,
+        ValueKind::Module => SymbolKind::MODULE,
+        ValueKind::Require(_) => SymbolKind::PACKAGE,
+        ValueKind::FileHandle => SymbolKind::FILE,
+        ValueKind::Unknown => SymbolKind::OBJECT,
+        ValueKind::Symbol => SymbolKind::OBJECT,
     }
 }
 
@@ -42,9 +66,7 @@ pub(crate) fn value_kind(kind: &models::ValueKind) -> &'static str {
     }
 }
 
-pub(crate) fn completion_scope_kind(
-    kind: models::ScopeKind,
-) -> CompletionItemKind {
+pub(crate) fn completion_scope_kind(kind: models::ScopeKind) -> CompletionItemKind {
     match kind {
         models::ScopeKind::Local
         | models::ScopeKind::Let
@@ -59,15 +81,11 @@ pub(crate) fn completion_scope_kind(
         | models::ScopeKind::MatchTry
         | models::ScopeKind::Catch
         | models::ScopeKind::Var => CompletionItemKind::VARIABLE,
-        models::ScopeKind::Func | models::ScopeKind::Lambda => {
-            CompletionItemKind::FUNCTION
-        }
+        models::ScopeKind::Func | models::ScopeKind::Lambda => CompletionItemKind::FUNCTION,
     }
 }
 
-pub(crate) fn completion_value_kind(
-    kind: models::CompletionKind,
-) -> CompletionItemKind {
+pub(crate) fn completion_value_kind(kind: models::CompletionKind) -> CompletionItemKind {
     match kind {
         models::CompletionKind::Func => CompletionItemKind::FUNCTION,
         models::CompletionKind::Module => CompletionItemKind::MODULE,
@@ -83,49 +101,33 @@ pub(crate) fn error(e: ErrorKind) -> (String, DiagnosticSeverity) {
         ErrorKind::Unterminated(kind) => {
             (format!("Incomplete {}", kind), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::Unexpected(kind) => (
-            format!("Unexpected {} in input", kind),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::UnexpectedEof => (
-            "Unexpected end of file. Expected closing delimiter".into(),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::EmptyList => {
-            ("Found empty list".into(), DiagnosticSeverity::ERROR)
+        ErrorKind::Unexpected(kind) => {
+            (format!("Unexpected {} in input", kind), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::DirectCall(kind) => (
-            format!("Cannot directly call value {}", kind),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::LiteralCall(kind) => (
-            format!("Cannot call literal value {}", kind),
-            DiagnosticSeverity::ERROR,
-        ),
+        ErrorKind::UnexpectedEof => {
+            ("Unexpected end of file. Expected closing delimiter".into(), DiagnosticSeverity::ERROR)
+        }
+        ErrorKind::EmptyList => ("Found empty list".into(), DiagnosticSeverity::ERROR),
+        ErrorKind::DirectCall(kind) => {
+            (format!("Cannot directly call value {}", kind), DiagnosticSeverity::ERROR)
+        }
+        ErrorKind::LiteralCall(kind) => {
+            (format!("Cannot call literal value {}", kind), DiagnosticSeverity::ERROR)
+        }
         ErrorKind::GlobalConflict => {
             ("Global conflicts with local".into(), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::Dismatched => {
-            ("Closing delimiter is missing".into(), DiagnosticSeverity::ERROR)
+        ErrorKind::Dismatched => ("Closing delimiter is missing".into(), DiagnosticSeverity::ERROR),
+        ErrorKind::Undefined(iden) => {
+            (format!("Undefined identifier: {}", iden), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::Undefined(iden) => (
-            format!("Undefined identifier: {}", iden),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::Unused => {
-            ("Unused identifier".into(), DiagnosticSeverity::HINT)
+        ErrorKind::Unused => ("Unused identifier".into(), DiagnosticSeverity::HINT),
+        ErrorKind::MissingWhitespace => {
+            ("Expected whitespace before opening delimiter".into(), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::MissingWhitespace => (
-            "Expected whitespace before opening delimiter".into(),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::MacroWhitespace => {
-            ("Invalid macro".into(), DiagnosticSeverity::ERROR)
-        }
+        ErrorKind::MacroWhitespace => ("Invalid macro".into(), DiagnosticSeverity::ERROR),
 
-        ErrorKind::InvalidSymbol => {
-            ("Invalid symbol".into(), DiagnosticSeverity::ERROR)
-        }
+        ErrorKind::InvalidSymbol => ("Invalid symbol".into(), DiagnosticSeverity::ERROR),
 
         ErrorKind::MethodNotAllowed => {
             ("Unexpected symbol method".into(), DiagnosticSeverity::ERROR)
@@ -134,27 +136,20 @@ pub(crate) fn error(e: ErrorKind) -> (String, DiagnosticSeverity) {
         ErrorKind::FieldAndMethodNotAllowed => {
             ("Unexpected multi symbol".into(), DiagnosticSeverity::ERROR)
         }
-        ErrorKind::MultiVarargs => (
-            "Multiple varargs are not allowed".into(),
-            DiagnosticSeverity::WARNING,
-        ),
-        ErrorKind::UnexpectedVarargs => (
-            "Varargs not found in parameter table".into(),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::MultiCatch => (
-            "Only one catch clause permitted".into(),
-            DiagnosticSeverity::ERROR,
-        ),
-        ErrorKind::CatchNotLast => (
-            "Catch clause must be at the end".into(),
-            DiagnosticSeverity::ERROR,
-        ),
+        ErrorKind::MultiVarargs => {
+            ("Multiple varargs are not allowed".into(), DiagnosticSeverity::WARNING)
+        }
+        ErrorKind::UnexpectedVarargs => {
+            ("Varargs not found in parameter table".into(), DiagnosticSeverity::ERROR)
+        }
+        ErrorKind::MultiCatch => {
+            ("Only one catch clause permitted".into(), DiagnosticSeverity::ERROR)
+        }
+        ErrorKind::CatchNotLast => {
+            ("Catch clause must be at the end".into(), DiagnosticSeverity::ERROR)
+        }
         ErrorKind::Deprecated(version, recommendation) => (
-            format!(
-                "Deprecated in version `{}`. Use `{}` instead",
-                version, recommendation
-            ),
+            format!("Deprecated in version `{}`. Use `{}` instead", version, recommendation),
             DiagnosticSeverity::HINT,
         ),
     }

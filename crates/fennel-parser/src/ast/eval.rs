@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use rowan::ast::AstNode;
 
 use crate::{
-    ast::{func, models, nodes::*},
     SyntaxKind, SyntaxNode,
+    ast::{func, models, nodes::*},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -191,12 +191,8 @@ impl Atom {
 impl Literal {
     pub fn eval_kind(&self) -> Option<models::ValueKind> {
         match self.0.first_token()?.kind() {
-            SyntaxKind::FLOAT | SyntaxKind::INTEGER => {
-                Some(models::ValueKind::Number)
-            }
-            SyntaxKind::QUOTE_STRING | SyntaxKind::COLON_STRING => {
-                Some(models::ValueKind::String)
-            }
+            SyntaxKind::FLOAT | SyntaxKind::INTEGER => Some(models::ValueKind::Number),
+            SyntaxKind::QUOTE_STRING | SyntaxKind::COLON_STRING => Some(models::ValueKind::String),
             SyntaxKind::BOOL => Some(models::ValueKind::Bool),
             SyntaxKind::NIL => Some(models::ValueKind::Nil),
             _ => None,
@@ -206,9 +202,7 @@ impl Literal {
     pub(crate) fn cast_string(&self) -> Option<(String, StringKind)> {
         let token = self.syntax().first_token()?;
         match token.kind() {
-            SyntaxKind::COLON_STRING => {
-                Some((token.text()[1..].to_string(), StringKind::Colon))
-            }
+            SyntaxKind::COLON_STRING => Some((token.text()[1..].to_string(), StringKind::Colon)),
             SyntaxKind::QUOTE_STRING => {
                 let text = token.text();
                 Some((text[1..text.len() - 1].to_string(), StringKind::Quote))
@@ -246,19 +240,12 @@ impl Literal {
 
 impl List {
     pub(crate) fn eval_kind(&self) -> Option<models::ValueKind> {
-        let sublist = self
-            .0
-            .children()
-            .find(|n| n.kind() == SyntaxKind::N_SUBLIST)?
-            .first_child()?;
+        let sublist =
+            self.0.children().find(|n| n.kind() == SyntaxKind::N_SUBLIST)?.first_child()?;
         match sublist.kind() {
-            SyntaxKind::N_SYMBOL_CALL => {
-                SymbolCall::cast(sublist)?.eval_kind()
-            }
+            SyntaxKind::N_SYMBOL_CALL => SymbolCall::cast(sublist)?.eval_kind(),
             SyntaxKind::N_INCLUDE => None,
-            SyntaxKind::N_PARTIAL | SyntaxKind::N_PICK_ARGS => {
-                Some(models::ValueKind::Func)
-            }
+            SyntaxKind::N_PARTIAL | SyntaxKind::N_PICK_ARGS => Some(models::ValueKind::Func),
             SyntaxKind::N_ICOLLECT => Some(models::ValueKind::SeqTable),
             SyntaxKind::N_COLLECT => Some(models::ValueKind::KvTable),
             _ => Some(EvalAst::cast(sublist)?.eval_kind()),
@@ -286,11 +273,10 @@ impl Operation {
         match first_token.kind() {
             SyntaxKind::LENGTH => Some(models::ValueKind::Number),
             SyntaxKind::OPERATOR => match first_token.text() {
-                "-" | "/" | "//" | "lshift" | "rshift" | "band" | "bor"
-                | "bxor" | "length" => Some(models::ValueKind::Number),
-                ">" | "<" | ">=" | "<=" | "~=" | "=" | "not=" => {
-                    Some(models::ValueKind::Bool)
+                "-" | "/" | "//" | "lshift" | "rshift" | "band" | "bor" | "bxor" | "length" => {
+                    Some(models::ValueKind::Number)
                 }
+                ">" | "<" | ">=" | "<=" | "~=" | "=" | "not=" => Some(models::ValueKind::Bool),
                 ".." => Some(models::ValueKind::String),
                 _ => None,
             },
@@ -307,8 +293,7 @@ impl RightSymbol {
         let node = self.syntax();
         if node.children_with_tokens().any(|t| {
             let kind = t.as_token().unwrap().kind();
-            kind == SyntaxKind::SYMBOL_FIELD
-                || kind == SyntaxKind::SYMBOL_METHOD
+            kind == SyntaxKind::SYMBOL_FIELD || kind == SyntaxKind::SYMBOL_METHOD
         }) {
             None
         } else {
