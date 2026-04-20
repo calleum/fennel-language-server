@@ -13,7 +13,7 @@ use crate::SyntaxToken;
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LSymbols(pub(crate) BTreeMap<u32, LSymbol>);
 
-pub type Globals = Vec<(CompletionKind, Vec<&'static str>)>;
+pub type Globals = Vec<(CompletionKind, Vec<String>)>;
 
 pub(crate) type RSymbols = Vec<RSymbol>;
 

@@ -122,21 +122,6 @@ impl Ast {
             return Some(Definition::File(path));
         }
 
-        // Handle multi-symbols (e.g. vim.lsp.set_log_level)
-        if let Some(n) = token.parent()
-            && (n.kind() == SyntaxKind::N_R_SYMBOL || n.kind() == SyntaxKind::N_L_R_SYMBOL)
-        {
-            let mut path = PathBuf::new();
-            for child in n.children_with_tokens() {
-                let text = child.to_string();
-                let part = text.strip_prefix('.').unwrap_or(&text);
-                path.push(part);
-                if child.text_range().contains(TextSize::from(offset)) {
-                    return Some(Definition::File(path));
-                }
-            }
-        }
-
         if token.kind() == SyntaxKind::COMMA {
             token = token.next_token()?;
         }
@@ -234,26 +219,68 @@ impl Ast {
             return (Box::new(vec![].into_iter()), vec![]);
         }
         let token = token.unwrap();
-
         if trigger.is_some() {
-            let token = token
-                .prev_sibling_or_token()
-                .and_then(|n| n.as_node().cloned())
-                .filter(|n| nodes::RightSymbol::can_cast(n.kind()))
-                .map(|t| t.text().to_string());
+            let symbol_token = token.prev_token().and_then(|t| t.parent()).and_then(|n| {
+                nodes::ReferSymbol::cast(n.clone())
+                    .or_else(|| nodes::ReferSymbol::cast(n.parent()?))
+            });
 
-            let res = match token.as_deref() {
-                Some("coroutine.") => Vec::from(include!("static/modules/coroutine")),
-                Some("debug.") => Vec::from(include!("static/modules/debug")),
-                Some("file:") => Vec::from(include!("static/modules/file")),
-                Some("io.") => Vec::from(include!("static/modules/io")),
-                Some("math.") => Vec::from(include!("static/modules/math")),
-                Some("os.") => Vec::from(include!("static/modules/os")),
-                Some("package.") => Vec::from(include!("static/modules/package")),
-                Some("string.") => Vec::from(include!("static/modules/string")),
-                Some("table.") => Vec::from(include!("static/modules/table")),
+            let text = symbol_token.as_ref().map(|t| t.syntax().text().to_string());
+
+            let mut res: Vec<String> = match text.as_deref() {
+                Some("coroutine.") => {
+                    include!("static/modules/coroutine").iter().map(|s| s.to_string()).collect()
+                }
+                Some("debug.") => {
+                    include!("static/modules/debug").iter().map(|s| s.to_string()).collect()
+                }
+                Some("file:") => {
+                    include!("static/modules/file").iter().map(|s| s.to_string()).collect()
+                }
+                Some("io.") => {
+                    include!("static/modules/io").iter().map(|s| s.to_string()).collect()
+                }
+                Some("math.") => {
+                    include!("static/modules/math").iter().map(|s| s.to_string()).collect()
+                }
+                Some("os.") => {
+                    include!("static/modules/os").iter().map(|s| s.to_string()).collect()
+                }
+                Some("package.") => {
+                    include!("static/modules/package").iter().map(|s| s.to_string()).collect()
+                }
+                Some("string.") => {
+                    include!("static/modules/string").iter().map(|s| s.to_string()).collect()
+                }
+                Some("table.") => {
+                    include!("static/modules/table").iter().map(|s| s.to_string()).collect()
+                }
                 _ => vec![],
             };
+
+            if res.is_empty()
+                && let Some(n) = symbol_token
+            {
+                let text = n.syntax().text().to_string();
+                let base =
+                    text.strip_suffix('.').or_else(|| text.strip_suffix(':')).unwrap_or(&text);
+                let token_for_lsym =
+                    models::Token { text: base.to_string(), range: n.syntax().text_range() };
+                if let Some(lsym) = self.l_symbols.nearest(&token_for_lsym)
+                    && let Some(range) = lsym.value.range
+                {
+                    let root = SyntaxNode::new_root(self.root.clone());
+                    if let Some(token) = root.token_at_offset(range.start()).right_biased()
+                        && let Some(kv_table) =
+                            nodes::get_ancestor::<nodes::KvTable>(&token.parent().unwrap())
+                    {
+                        for k in kv_table.cast_hashmap().keys() {
+                            res.push(k.clone());
+                        }
+                    }
+                }
+            }
+
             return (Box::new(::std::iter::empty()), vec![(models::CompletionKind::Field, res)]);
         }
 
@@ -305,14 +332,23 @@ impl Ast {
             Some(res)
         }();
 
-        let mut globals =
-            vec![(models::CompletionKind::Module, Vec::from(include!("static/globals-module")))];
+        let mut globals = vec![(
+            models::CompletionKind::Module,
+            include!("static/globals-module").iter().map(|s| s.to_string()).collect(),
+        )];
         if call_position.unwrap_or(false) {
-            globals
-                .push((models::CompletionKind::Func, Vec::from(include!("static/globals-func"))));
-            globals.push((models::CompletionKind::Keyword, Vec::from(include!("static/keywords"))));
-            globals
-                .push((models::CompletionKind::Operator, Vec::from(include!("static/operator"))));
+            globals.push((
+                models::CompletionKind::Func,
+                include!("static/globals-func").iter().map(|s| s.to_string()).collect(),
+            ));
+            globals.push((
+                models::CompletionKind::Keyword,
+                include!("static/keywords").iter().map(|s| s.to_string()).collect(),
+            ));
+            globals.push((
+                models::CompletionKind::Operator,
+                include!("static/operator").iter().map(|s| s.to_string()).collect(),
+            ));
             if token.parent_ancestors().any(|n| {
                 [
                     SyntaxKind::N_MACRO,
@@ -324,12 +360,18 @@ impl Ast {
             }) {
                 globals.push((
                     models::CompletionKind::Keyword,
-                    Vec::from(include!("static/compiler-macro")),
+                    include!("static/compiler-macro").iter().map(|s| s.to_string()).collect(),
                 ))
             }
         } else {
-            globals.push((models::CompletionKind::Keyword, Vec::from(include!("static/literals"))));
-            globals.push((models::CompletionKind::Var, Vec::from(include!("static/globals-var"))));
+            globals.push((
+                models::CompletionKind::Keyword,
+                include!("static/literals").iter().map(|s| s.to_string()).collect(),
+            ));
+            globals.push((
+                models::CompletionKind::Var,
+                include!("static/globals-var").iter().map(|s| s.to_string()).collect(),
+            ));
         }
         (Box::new(self.l_symbols.range(offset)), globals)
     }
@@ -533,16 +575,18 @@ impl Ast {
     }
 
     fn l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> FindLSymbol<'_> {
+        let mut token = r_symbol.token.clone();
+        if let Some(base) = token.text.split('.').next().and_then(|s| s.split(':').next()) {
+            token.text = base.to_string();
+        }
         match r_symbol.special {
-            models::SpecialKind::Normal | models::SpecialKind::MacroUnquote => self
-                .l_symbols
-                .nearest(&r_symbol.token)
-                .map_or(FindLSymbol::NotFound, FindLSymbol::Found),
+            models::SpecialKind::Normal | models::SpecialKind::MacroUnquote => {
+                self.l_symbols.nearest(&token).map_or(FindLSymbol::NotFound, FindLSymbol::Found)
+            }
             models::SpecialKind::HashArg => FindLSymbol::Skip,
-            models::SpecialKind::MacroWrap => self
-                .l_symbols
-                .nearest(&r_symbol.token)
-                .map_or(FindLSymbol::Skip, FindLSymbol::Found),
+            models::SpecialKind::MacroWrap => {
+                self.l_symbols.nearest(&token).map_or(FindLSymbol::Skip, FindLSymbol::Found)
+            }
         }
     }
 
@@ -1051,7 +1095,7 @@ mod tests {
                     if kind == models::CompletionKind::Keyword { Some(words) } else { None }
                 })
                 .unwrap()
-                .contains(&"lambda")
+                .contains(&"lambda".to_string())
         );
     }
 

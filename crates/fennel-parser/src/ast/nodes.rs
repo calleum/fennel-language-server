@@ -124,57 +124,66 @@ impl Root {
         let event_hashfn = |kind: SyntaxKind| -> bool { kind == SyntaxKind::N_MACRO_HASH };
         self.syntax()
             .preorder()
-            .flat_map(|event| match event {
-                rowan::WalkEvent::Enter(n) => {
-                    let n_kind = n.kind();
-                    if event_macro(n_kind) {
-                        count_macro += 1;
-                    }
-                    if event_hashfn(n_kind) {
-                        count_hashfn += 1;
-                    }
-                    let refer_symbol = ReferSymbol::cast(n.clone()).and_then(|n| n.name()).map(
-                        |(token, starts_with_comma)| {
-                            if count_hashfn > 0 && token.text.starts_with('$') {
-                                return models::RSymbol {
-                                    token,
-                                    special: models::SpecialKind::HashArg,
-                                };
-                            }
-                            if count_macro > 0 {
-                                if starts_with_comma {
-                                    return models::RSymbol {
+            .flat_map(|event| {
+                let mut res = vec![];
+                match event {
+                    rowan::WalkEvent::Enter(n) => {
+                        let n_kind = n.kind();
+                        if event_macro(n_kind) {
+                            count_macro += 1;
+                        }
+                        if event_hashfn(n_kind) {
+                            count_hashfn += 1;
+                        }
+                        if let Some(n) = ReferSymbol::cast(n.clone()) {
+                            for (token, starts_with_comma) in n.all_names() {
+                                if count_hashfn > 0 && token.text.starts_with('$') {
+                                    res.push(models::RSymbol {
                                         token,
-                                        special: models::SpecialKind::MacroUnquote,
-                                    };
-                                } else {
-                                    return models::RSymbol {
-                                        token,
-                                        special: models::SpecialKind::MacroWrap,
-                                    };
+                                        special: models::SpecialKind::HashArg,
+                                    });
+                                    continue;
                                 }
+                                if count_macro > 0 {
+                                    if starts_with_comma {
+                                        res.push(models::RSymbol {
+                                            token,
+                                            special: models::SpecialKind::MacroUnquote,
+                                        });
+                                    } else {
+                                        res.push(models::RSymbol {
+                                            token,
+                                            special: models::SpecialKind::MacroWrap,
+                                        });
+                                    }
+                                    continue;
+                                }
+                                res.push(models::RSymbol {
+                                    token,
+                                    special: models::SpecialKind::Normal,
+                                });
                             }
-                            models::RSymbol { token, special: models::SpecialKind::Normal }
-                        },
-                    );
-                    let fn_name = || {
-                        func::FuncAst::cast(n).and_then(|f| f.r_name()).map(|s| models::RSymbol {
-                            special: models::SpecialKind::Normal,
-                            token: s,
-                        })
-                    };
-                    refer_symbol.or_else(fn_name)
-                }
-                rowan::WalkEvent::Leave(n) => {
-                    let n_kind = n.kind();
-                    if event_macro(n_kind) {
-                        count_macro -= 1;
+                        }
+                        if let Some(f) = func::FuncAst::cast(n)
+                            && let Some(s) = f.r_name()
+                        {
+                            res.push(models::RSymbol {
+                                special: models::SpecialKind::Normal,
+                                token: s,
+                            })
+                        }
                     }
-                    if event_hashfn(n_kind) {
-                        count_hashfn -= 1;
+                    rowan::WalkEvent::Leave(n) => {
+                        let n_kind = n.kind();
+                        if event_macro(n_kind) {
+                            count_macro -= 1;
+                        }
+                        if event_hashfn(n_kind) {
+                            count_hashfn -= 1;
+                        }
                     }
-                    None
                 }
+                res
             })
             .collect()
     }
@@ -235,21 +244,49 @@ impl Root {
 ast_assoc!(ReferSymbol, [RightSymbol, LeftRightSymbol]);
 
 impl ReferSymbol {
-    pub(crate) fn name(&self) -> Option<(models::Token, bool)> {
+    pub(crate) fn all_names(&self) -> Vec<(models::Token, bool)> {
+        let mut res = vec![];
         let mut nodes = self.syntax().children_with_tokens();
-        let first_node = nodes.next()?;
-        let first_token = first_node.as_token()?;
+        let first_node = match nodes.next() {
+            Some(n) => n,
+            None => return res,
+        };
+        let first_token = match first_node.as_token() {
+            Some(t) => t,
+            None => return res,
+        };
+
         let prefix_is_comma = first_token.kind() == SyntaxKind::COMMA;
         let prev_is_comma =
             first_token.prev_token().map(|t| t.kind() == SyntaxKind::COMMA).unwrap_or(false);
-        // TODO: improve syntax
-        if prefix_is_comma {
-            Some((nodes.next()?.as_token()?.to_owned().into(), true))
+
+        let (base_token, starts_with_comma) = if prefix_is_comma {
+            let next = match nodes.next().and_then(|n| n.into_token()) {
+                Some(t) => t,
+                None => return res,
+            };
+            (next, true)
         } else if prev_is_comma {
-            Some((first_token.to_owned().into(), true))
+            (first_token.to_owned(), true)
         } else {
-            Some((first_token.to_owned().into(), false))
+            (first_token.to_owned(), false)
+        };
+
+        let mut current_text = base_token.text().to_string();
+        res.push((base_token.into(), starts_with_comma));
+        for node in nodes {
+            if let Some(token) = node.as_token()
+                && (token.kind() == SyntaxKind::SYMBOL_FIELD
+                    || token.kind() == SyntaxKind::SYMBOL_METHOD)
+            {
+                current_text.push_str(token.text());
+                res.push((
+                    models::Token { text: current_text.clone(), range: token.text_range() },
+                    starts_with_comma,
+                ));
+            }
         }
+        res
     }
 }
 
