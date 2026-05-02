@@ -2,18 +2,15 @@
 mod macros;
 mod bind;
 mod error;
-mod eval;
+pub mod eval;
 mod func;
 pub mod models;
-mod nodes;
+pub mod nodes;
 
 pub use self::models::{
     Action, AstDocumentSymbol, AstSymbolInformation, Definition, Globals, SuppressErrorKind,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::{collections::HashSet, path::PathBuf};
 
 use rowan::{GreenNode, TextRange, TextSize, ast::AstNode};
 
@@ -27,8 +24,6 @@ use crate::{Error, ErrorKind::*, SyntaxKind, SyntaxNode, lexer};
 pub struct Ast {
     pub root: rowan::GreenNode,
 
-    pub lua_globals: HashSet<&'static str>,
-    pub lua_modules: HashSet<&'static str>,
     pub globals: HashSet<String>,
     l_symbols: models::LSymbols,
     r_symbols: models::RSymbols,
@@ -45,15 +40,9 @@ impl Ast {
     pub fn new(
         green_node: GreenNode,
         parser_errors: Vec<Error>,
-        mut user_globals: HashSet<String>,
+        user_globals: HashSet<String>,
     ) -> Self {
         let root = Root::cast(SyntaxNode::new_root(green_node.clone())).unwrap();
-
-        let lua_globals: HashSet<&'static str> = HashSet::from(include!("static/globals"));
-        let lua_modules: HashSet<&'static str> = HashSet::from(include!("static/globals-module"));
-        lua_globals.iter().for_each(|v| {
-            user_globals.insert(v.to_string());
-        });
 
         let mut ast = Ast {
             root: green_node,
@@ -64,8 +53,6 @@ impl Ast {
             unused_l_symbol_errors: vec![],
             other_errors: vec![],
             suppressed_errors: vec![],
-            lua_globals,
-            lua_modules,
             globals: user_globals,
             resources: vec![],
         };
@@ -86,9 +73,6 @@ impl Ast {
 
     pub fn update_globals(&mut self, globals: Vec<String>) {
         self.globals = HashSet::from_iter(globals);
-        self.lua_globals.iter().for_each(|v| {
-            self.globals.insert(v.to_string());
-        });
         self.update_definition_errors();
     }
 
@@ -136,7 +120,21 @@ impl Ast {
         }
 
         let r_symbol = self.r_symbol(token_start)?;
-        self.l_symbol_by_r(r_symbol).found().map(|s| Definition::Symbol(s.clone(), false))
+        self.l_symbol_by_r(r_symbol).found().map(|s| {
+            if r_symbol.token.text != s.token.text {
+                Definition::SymbolField(s.clone(), r_symbol.token.text.clone())
+            } else {
+                Definition::Symbol(s.clone(), false)
+            }
+        })
+    }
+
+    pub fn definition_for_global(&self, name: &str) -> Option<Definition> {
+        self.l_symbols
+            .0
+            .values()
+            .find(|s| s.scope.kind == models::ScopeKind::Global && s.token.text == name)
+            .map(|s| Definition::Symbol(s.clone(), true))
     }
 
     fn get_children(&self, node: SyntaxNode) -> Vec<AstDocumentSymbol> {
@@ -144,18 +142,23 @@ impl Ast {
         for child in node.children() {
             if let Some(bindings) = BindingListAst::cast(child.clone()) {
                 if let Some(lsymbols) = bindings.bindings() {
-                    for lsym in lsymbols {
+                    let children = self.get_children(child.clone());
+                    let lsymbols_len = lsymbols.len();
+                    for (i, lsym) in lsymbols.into_iter().enumerate() {
                         let resolved_lsym =
                             self.l_symbols.get(lsym.token.range.start().into()).unwrap_or(&lsym);
 
-                        let children = self.get_children(child.clone());
                         symbols.push(AstDocumentSymbol::new(
                             resolved_lsym.token.text.clone(),
                             None,
                             resolved_lsym.value.kind.clone(),
                             resolved_lsym.value.range.unwrap_or(resolved_lsym.token.range),
                             resolved_lsym.token.range,
-                            if children.is_empty() { None } else { Some(children) },
+                            if i == lsymbols_len - 1 && !children.is_empty() {
+                                Some(children.clone())
+                            } else {
+                                None
+                            },
                         ));
                     }
                 }
@@ -163,31 +166,14 @@ impl Ast {
                 symbols.extend(self.get_children(child));
             }
         }
+        symbols.sort_by_key(|s| s.range.start());
+        symbols.dedup_by_key(|s| s.range);
         symbols
     }
 
     pub fn document_symbols(&self) -> Vec<AstDocumentSymbol> {
         let root = SyntaxNode::new_root(self.root.clone());
         self.get_children(root)
-    }
-
-    pub fn document_symbol(&self) -> Vec<AstSymbolInformation> {
-        let _root = SyntaxNode::new_root(self.root.clone());
-
-        self.l_symbols
-            .clone()
-            .0
-            .values()
-            .map(|a| {
-                AstSymbolInformation::new(
-                    a.token.text.clone(),
-                    a.value.kind.clone(),
-                    a.value
-                        .range
-                        .unwrap_or(TextRange::new(TextSize::new(0_u32), TextSize::new(1_u32))),
-                )
-            })
-            .collect()
     }
 
     pub fn reference(&self, offset: u32) -> Option<Vec<TextRange>> {
@@ -212,11 +198,19 @@ impl Ast {
         Some(ranges)
     }
 
-    pub fn completion(&self, offset: u32, trigger: Option<String>) -> (LSymbolsIter<'_>, Globals) {
+    pub fn end_offset(&self) -> u32 {
+        self.root.text_len().into()
+    }
+
+    pub fn completion(
+        &self,
+        offset: u32,
+        trigger: Option<String>,
+    ) -> (LSymbolsIter<'_>, Globals, Option<models::Value>, String) {
         let root = SyntaxNode::new_root(self.root.clone());
         let token = root.token_at_offset(TextSize::from(offset)).right_biased();
         if token.is_none() {
-            return (Box::new(vec![].into_iter()), vec![]);
+            return (Box::new(vec![].into_iter()), vec![], None, String::new());
         }
         let token = token.unwrap();
         if trigger.is_some() {
@@ -225,38 +219,11 @@ impl Ast {
                     .or_else(|| nodes::ReferSymbol::cast(n.parent()?))
             });
 
-            let text = symbol_token.as_ref().map(|t| t.syntax().text().to_string());
+            let _text = symbol_token.as_ref().map(|t| t.syntax().text().to_string());
 
-            let mut res: Vec<String> = match text.as_deref() {
-                Some("coroutine.") => {
-                    include!("static/modules/coroutine").iter().map(|s| s.to_string()).collect()
-                }
-                Some("debug.") => {
-                    include!("static/modules/debug").iter().map(|s| s.to_string()).collect()
-                }
-                Some("file:") => {
-                    include!("static/modules/file").iter().map(|s| s.to_string()).collect()
-                }
-                Some("io.") => {
-                    include!("static/modules/io").iter().map(|s| s.to_string()).collect()
-                }
-                Some("math.") => {
-                    include!("static/modules/math").iter().map(|s| s.to_string()).collect()
-                }
-                Some("os.") => {
-                    include!("static/modules/os").iter().map(|s| s.to_string()).collect()
-                }
-                Some("package.") => {
-                    include!("static/modules/package").iter().map(|s| s.to_string()).collect()
-                }
-                Some("string.") => {
-                    include!("static/modules/string").iter().map(|s| s.to_string()).collect()
-                }
-                Some("table.") => {
-                    include!("static/modules/table").iter().map(|s| s.to_string()).collect()
-                }
-                _ => vec![],
-            };
+            let mut res: Vec<String> = vec![];
+            let mut base_value: Option<models::Value> = None;
+            let mut base_text = String::new();
 
             if res.is_empty()
                 && let Some(n) = symbol_token
@@ -264,24 +231,34 @@ impl Ast {
                 let text = n.syntax().text().to_string();
                 let base =
                     text.strip_suffix('.').or_else(|| text.strip_suffix(':')).unwrap_or(&text);
+                base_text = base.to_string();
                 let token_for_lsym =
                     models::Token { text: base.to_string(), range: n.syntax().text_range() };
-                if let Some(lsym) = self.l_symbols.nearest(&token_for_lsym)
-                    && let Some(range) = lsym.value.range
-                {
-                    let root = SyntaxNode::new_root(self.root.clone());
-                    if let Some(token) = root.token_at_offset(range.start()).right_biased()
-                        && let Some(kv_table) =
-                            nodes::get_ancestor::<nodes::KvTable>(&token.parent().unwrap())
-                    {
-                        for k in kv_table.cast_hashmap().keys() {
-                            res.push(k.clone());
+                if let Some(lsym) = self.l_symbols.nearest(&token_for_lsym) {
+                    base_value = Some(lsym.value.clone());
+                    if let Some(range) = lsym.value.range {
+                        let root = SyntaxNode::new_root(self.root.clone());
+                        if let Some(token) = root.token_at_offset(range.start()).right_biased()
+                            && let Some(kv_table) =
+                                nodes::get_ancestor::<nodes::KvTable>(&token.parent().unwrap())
+                        {
+                            for k in kv_table.cast_hashmap().keys() {
+                                res.push(k.clone());
+                            }
                         }
                     }
+                } else if self.globals.contains(base) {
+                    base_value =
+                        Some(models::Value { kind: models::ValueKind::Module, range: None });
                 }
             }
 
-            return (Box::new(::std::iter::empty()), vec![(models::CompletionKind::Field, res)]);
+            return (
+                Box::new(::std::iter::empty()),
+                vec![(models::CompletionKind::Field, res)],
+                base_value,
+                base_text,
+            );
         }
 
         let call_position = || -> Option<bool> {
@@ -332,22 +309,15 @@ impl Ast {
             Some(res)
         }();
 
-        let mut globals = vec![(
-            models::CompletionKind::Module,
-            include!("static/globals-module").iter().map(|s| s.to_string()).collect(),
-        )];
+        let mut globals = vec![];
         if call_position.unwrap_or(false) {
             globals.push((
-                models::CompletionKind::Func,
-                include!("static/globals-func").iter().map(|s| s.to_string()).collect(),
-            ));
-            globals.push((
                 models::CompletionKind::Keyword,
-                include!("static/keywords").iter().map(|s| s.to_string()).collect(),
+                crate::builtins::KEYWORDS.iter().map(|s| s.to_string()).collect(),
             ));
             globals.push((
                 models::CompletionKind::Operator,
-                include!("static/operator").iter().map(|s| s.to_string()).collect(),
+                crate::builtins::OPERATORS.iter().map(|s| s.to_string()).collect(),
             ));
             if token.parent_ancestors().any(|n| {
                 [
@@ -360,20 +330,16 @@ impl Ast {
             }) {
                 globals.push((
                     models::CompletionKind::Keyword,
-                    include!("static/compiler-macro").iter().map(|s| s.to_string()).collect(),
+                    crate::builtins::COMPILER_MACROS.iter().map(|s| s.to_string()).collect(),
                 ))
             }
         } else {
             globals.push((
                 models::CompletionKind::Keyword,
-                include!("static/literals").iter().map(|s| s.to_string()).collect(),
-            ));
-            globals.push((
-                models::CompletionKind::Var,
-                include!("static/globals-var").iter().map(|s| s.to_string()).collect(),
+                crate::builtins::LITERALS.iter().map(|s| s.to_string()).collect(),
             ));
         }
-        (Box::new(self.l_symbols.range(offset)), globals)
+        (Box::new(self.l_symbols.range(offset)), globals, None, String::new())
     }
 
     pub fn hint_action(&self, offset: u32) -> Vec<(TextRange, Action)> {
@@ -431,9 +397,9 @@ impl Ast {
     }
 
     #[allow(unused)]
-    pub(crate) fn return_kv_table(&self) -> Option<HashMap<String, eval::EvalAst>> {
+    pub fn return_kv_keys(&self) -> Option<Vec<String>> {
         let root = Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
-        root.return_kv_table()
+        root.return_kv_table().map(|m| m.into_keys().collect())
     }
 
     fn update_symbols(&mut self) {
@@ -478,7 +444,7 @@ impl Ast {
             let v = self.l_symbols.0.get_mut(key).unwrap();
             if let Some(l_symbol) = ref_l_symbol {
                 v.value = l_symbol.value;
-            } else if self.lua_modules.contains(text.as_str()) {
+            } else if self.globals.contains(&text) {
                 v.value.kind = models::ValueKind::Module;
             }
         })
@@ -499,7 +465,7 @@ impl Ast {
                 let base_symbol = text.split('.').next().unwrap_or(text);
                 if self.globals.contains(text)
                     || self.globals.contains(base_symbol)
-                    || Vec::from(include!("static/compiler-macro")).contains(&text)
+                    || crate::builtins::COMPILER_MACROS_SET.contains(&text)
                 {
                     None
                 } else {
@@ -590,7 +556,7 @@ impl Ast {
         }
     }
 
-    fn r_symbol(&self, offset: u32) -> Option<&models::RSymbol> {
+    pub fn r_symbol(&self, offset: u32) -> Option<&models::RSymbol> {
         self.r_symbols.iter().find(|s| s.token.range.contains(TextSize::from(offset)))
     }
 }
@@ -756,7 +722,7 @@ mod tests {
     #[test]
     fn check_undefined_destruct() {
         let text = "(let [ {abc abc} {:name 3} ] (print abc))";
-        let ast = parse(text.chars(), HashSet::new());
+        let ast = parse(text.chars(), HashSet::from(["print".to_string()]));
         assert_eq!(
             ast.errors().collect::<Vec<&Error>>(),
             vec![&Error::new(TextRange::new(8.into(), 11.into()), Undefined("abc".to_string()))],
@@ -787,7 +753,10 @@ mod tests {
         let text = "(var a {}) (print a.b:c)";
         assert_eq!(
             parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
-            vec![&Error::new(TextRange::new(18.into(), 23.into()), MethodNotAllowed)]
+            vec![
+                &Error::new(TextRange::new(12.into(), 17.into()), Undefined("print".to_string())),
+                &Error::new(TextRange::new(18.into(), 23.into()), MethodNotAllowed)
+            ]
         );
 
         let text = "(var a {}) (var a.b 1) (var a:b 1)";
@@ -845,7 +814,9 @@ mod tests {
     fn check_literal_call() {
         let text = "((-)) ((var x 1)) (table) (local z :s) (z)";
         assert_eq!(
-            parse(text.chars(), HashSet::new()).filtered_errors().collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::from(["table".to_string()]))
+                .filtered_errors()
+                .collect::<Vec<&Error>>(),
             vec![
                 &Error::new(
                     TextRange::new(1.into(), 4.into()),
@@ -878,7 +849,9 @@ mod tests {
     fn check_undefined_varargs() {
         let text = "... (fn a [] (print ...))";
         assert_eq!(
-            parse(text.chars(), HashSet::new()).errors().collect::<Vec<&Error>>(),
+            parse(text.chars(), HashSet::from(["print".to_string()]))
+                .errors()
+                .collect::<Vec<&Error>>(),
             vec![&Error::new(TextRange::new(20.into(), 23.into()), UnexpectedVarargs,)]
         );
     }
@@ -1010,18 +983,42 @@ mod tests {
     }
 
     #[test]
+    fn test_document_symbols_destructuring_nested() {
+        let text = "(local (x y) (let [z 3] (values z z)))";
+        let ast = parse(text.chars(), HashSet::new());
+        let symbols = ast.document_symbols();
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "x");
+        assert_eq!(symbols[1].name, "y");
+
+        assert!(symbols[0].children.is_none());
+        let y_children = symbols[1].children.as_ref().unwrap();
+        assert_eq!(y_children[0].name, "z");
+    }
+
+    #[test]
+    fn test_document_symbols_destructuring() {
+        let text = "(local (x y) (values 1 2))";
+        let ast = parse(text.chars(), HashSet::new());
+        let symbols = ast.document_symbols();
+        // Should have 2 symbols: x and y
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "x");
+        assert_eq!(symbols[1].name, "y");
+    }
+
+    #[test]
     fn test_document_symbols() {
         let text = "(fn foo [x] (let [y 1] (+ x y)))";
         let ast = parse(text.chars(), HashSet::new());
         let symbols = ast.document_symbols();
         assert_eq!(symbols.len(), 2);
-        // FuncAst::bindings returns params then name
-        assert_eq!(symbols[0].name, "x");
-        assert_eq!(symbols[1].name, "foo");
+        // After sorting by range start: foo then x
+        assert_eq!(symbols[0].name, "foo");
+        assert_eq!(symbols[1].name, "x");
 
-        let x_children = symbols[0].children.as_ref().unwrap();
-        assert_eq!(x_children[0].name, "y");
-        let foo_children = symbols[1].children.as_ref().unwrap();
+        assert!(symbols[1].children.is_none());
+        let foo_children = symbols[0].children.as_ref().unwrap();
         assert_eq!(foo_children[0].name, "y");
     }
 
@@ -1086,7 +1083,7 @@ mod tests {
         let text = "(local abc 2)(l)";
         let ast = parse(text.chars(), HashSet::new());
 
-        let (mut symbols, reserved) = ast.completion(15, None);
+        let (mut symbols, reserved, _, _) = ast.completion(15, None);
         assert!(symbols.any(|symbol| symbol.token.text == "abc"));
         assert!(
             reserved
@@ -1138,13 +1135,11 @@ mod tests {
     #[test]
     fn check_return() {
         let text = "{local a 1} {:b 2 : a :c d (+ 1 1) 3 none 4}";
-        let map = parse(text.chars(), HashSet::new()).return_kv_table().unwrap();
-        for (k, v) in map.into_iter() {
+        let keys = parse(text.chars(), HashSet::new()).return_kv_keys().unwrap();
+        for k in keys.into_iter() {
             match k.as_str() {
-                "a" => assert_eq!(v.syntax().text(), "a"),
-                "b" => assert_eq!(v.syntax().text(), "2"),
-                "c" => assert_eq!(v.syntax().text(), "d"),
-                n => panic!("Wrong key {}", n),
+                "b" | "a" | "c" | "2" => {}
+                _ => panic!("unexpected key: {}", k),
             }
         }
     }

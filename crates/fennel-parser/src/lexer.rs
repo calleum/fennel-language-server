@@ -208,7 +208,7 @@ pub(crate) fn validate_symbol(symbol: &str) -> bool {
         if lexer.next().unwrap().kind != SyntaxKind::END {
             return false;
         }
-        return !Vec::from(include!("static/reserved")).contains(&token.text.as_str());
+        return !crate::builtins::RESERVED_SET.contains(&token.text.as_str());
     }
     false
 }

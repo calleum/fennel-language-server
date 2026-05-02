@@ -1,4 +1,5 @@
-mod ast;
+pub mod ast;
+mod builtins;
 mod errors;
 mod lexer;
 mod parser;
@@ -12,7 +13,7 @@ pub use rowan::TextRange;
 pub(crate) use syntax::SyntaxKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum FennelLanguage {}
+pub enum FennelLanguage {}
 impl rowan::Language for FennelLanguage {
     type Kind = syntax::SyntaxKind;
 
@@ -26,9 +27,9 @@ impl rowan::Language for FennelLanguage {
     }
 }
 
-type SyntaxNode = rowan::SyntaxNode<FennelLanguage>;
-type SyntaxToken = rowan::SyntaxToken<FennelLanguage>;
-type SyntaxElement = rowan::SyntaxElement<FennelLanguage>;
+pub type SyntaxNode = rowan::SyntaxNode<FennelLanguage>;
+pub type SyntaxToken = rowan::SyntaxToken<FennelLanguage>;
+pub type SyntaxElement = rowan::SyntaxElement<FennelLanguage>;
 
 pub fn parse(text: impl Iterator<Item = char>, globals: HashSet<String>) -> ast::Ast {
     let parsed = parser::Parser::new(Box::new(text)).parse();

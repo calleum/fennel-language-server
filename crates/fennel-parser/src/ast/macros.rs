@@ -1,7 +1,7 @@
 macro_rules! ast_node {
     ($ast:ident, $syntax:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        pub(crate) struct $ast(pub(crate) SyntaxNode);
+        pub struct $ast(pub SyntaxNode);
 
         impl rowan::ast::AstNode for $ast {
             type Language = crate::FennelLanguage;
@@ -25,7 +25,7 @@ macro_rules! ast_assoc {
     ( $name:ident, [$($item:ident),* $(,)?] ) => {
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         #[allow(clippy::enum_variant_names)]
-        pub(crate) enum $name {
+        pub enum $name {
             $($item($item),)*
         }
         impl rowan::ast::AstNode for $name {

@@ -245,6 +245,7 @@ dependencies = [
  "dashmap 6.1.0",
  "fennel-parser",
  "ropey",
+ "rowan",
  "serde",
  "serde_json",
  "tempfile",

@@ -43,9 +43,9 @@ pub struct LSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RSymbol {
-    pub(crate) token: Token,
-    pub(crate) special: SpecialKind,
+pub struct RSymbol {
+    pub token: Token,
+    pub special: SpecialKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -99,6 +99,7 @@ pub enum ValueKind {
     KvTable,
     Macro,
     Module,
+    ModuleField(PathBuf, Vec<String>),
     Require(Option<PathBuf>),
     FileHandle,
     Unknown,
@@ -153,6 +154,7 @@ pub enum CompletionKind {
     Var,
 }
 
+#[derive(Debug, Clone)]
 pub struct AstDocumentSymbol {
     /// The name of this symbol.
     pub name: String,
@@ -206,6 +208,7 @@ impl AstSymbolInformation {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Definition {
     Symbol(LSymbol, bool),
+    SymbolField(LSymbol, String),
     FileSymbol(PathBuf, LSymbol),
     File(PathBuf),
 }
@@ -231,6 +234,7 @@ impl fmt::Display for ValueKind {
             Self::Macro => "macro",
             Self::MacroParam => "macro parameter",
             Self::Module => "module",
+            Self::ModuleField(_, _) => "module field",
             Self::Require(_) => "require",
             Self::FileHandle => "file handle",
             Self::Symbol => "symbol",

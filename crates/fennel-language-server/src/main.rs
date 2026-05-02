@@ -11,9 +11,10 @@ use std::{
 
 use clap::Parser;
 use dashmap::DashMap;
-use fennel_parser::{Ast, models};
+use fennel_parser::{Ast, SyntaxNode, models};
 use helper::*;
 use ropey::Rope;
+use rowan::ast::AstNode;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
@@ -23,7 +24,9 @@ use tower_lsp::{
     lsp_types::*,
 };
 
-use crate::view::value_kind_to_symbol_kind;
+use crate::view::{document_symbols_view, value_kind_to_symbol_kind};
+
+const STUBS_URI: &str = "fennel://stubs/lua54.fnl";
 
 #[derive(Debug)]
 struct Backend {
@@ -34,6 +37,8 @@ struct Backend {
     workspace_map: DashMap<Url, String>,
     // publish those after saving
     on_save_or_open_errors: DashMap<Url, Vec<fennel_parser::Error>>,
+    std_ast: Ast,
+    std_uri: Url,
 }
 
 #[tower_lsp::async_trait]
@@ -100,10 +105,33 @@ impl tower_lsp::LanguageServer for Backend {
         let offset = position_to_byte_offset(&doc, position)?;
 
         match ast.definition(offset) {
-            Some(fennel_parser::Definition::Symbol(symbol, _)) => {
+            Some(fennel_parser::Definition::Symbol(symbol, _))
+            | Some(fennel_parser::Definition::SymbolField(symbol, _)) => {
                 let range = lsp_range(&doc, symbol.token.range)?;
                 match symbol.value.kind {
                     models::ValueKind::Require(Some(file)) => {
+                        let res = self.find_file(&uri, file.clone());
+                        if let Some(fennel_parser::Definition::SymbolField(_, field_text)) =
+                            ast.definition(offset)
+                            && let Some(new_uri) = res
+                            && let Some(new_ast) = self.get_or_parse_ast(&new_uri).await
+                        {
+                            let fields: Vec<&str> = field_text.split('.').skip(1).collect();
+                            if let Some(target_lsymbol) =
+                                self.find_symbol_in_ast(&new_ast, &fields).await
+                            {
+                                let new_doc = self
+                                    .doc_map
+                                    .get(&new_uri)
+                                    .ok_or_else(Error::invalid_request)?;
+                                let new_range = lsp_range(&new_doc, target_lsymbol.token.range)?;
+                                return Ok(Some(GotoDefinitionResponse::Array(vec![
+                                    Location::new(uri.clone(), range),
+                                    Location::new(new_uri, new_range),
+                                ])));
+                            }
+                        }
+
                         self.find_file(&uri, file).map_or_else(
                             || {
                                 Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
@@ -118,6 +146,32 @@ impl tower_lsp::LanguageServer for Backend {
                                 ])))
                             },
                         )
+                    }
+                    models::ValueKind::ModuleField(file, fields) => {
+                        if let Some(new_uri) = self.find_file(&uri, file) {
+                            if let Some(new_ast) = self.get_or_parse_ast(&new_uri).await {
+                                let fields_str: Vec<&str> =
+                                    fields.iter().map(|s| s.as_str()).collect();
+                                if let Some(target_lsymbol) =
+                                    self.find_symbol_in_ast(&new_ast, &fields_str).await
+                                {
+                                    let new_doc = self
+                                        .doc_map
+                                        .get(&new_uri)
+                                        .ok_or_else(Error::invalid_request)?;
+                                    let new_range =
+                                        lsp_range(&new_doc, target_lsymbol.token.range)?;
+                                    return Ok(Some(GotoDefinitionResponse::Scalar(
+                                        Location::new(new_uri, new_range),
+                                    )));
+                                }
+                            }
+                            return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                                new_uri,
+                                lsp_range_head(),
+                            ))));
+                        }
+                        Ok(Some(GotoDefinitionResponse::Scalar(Location::new(uri, range))))
                     }
                     _ => Ok(Some(GotoDefinitionResponse::Scalar(Location::new(uri, range)))),
                 }
@@ -135,7 +189,48 @@ impl tower_lsp::LanguageServer for Backend {
                 });
                 Ok(res)
             }
-            None => Ok(None),
+            None => {
+                let r_symbol = ast
+                    .r_symbol(offset)
+                    .or_else(|| {
+                        // try at offset - 1 for things like (print|)
+                        if offset > 0 { ast.r_symbol(offset - 1) } else { None }
+                    })
+                    .ok_or_else(Error::invalid_request)?;
+                let text = r_symbol.token.text.as_str();
+                let fields: Vec<&str> = text.split('.').collect();
+                let base = fields[0];
+
+                if self.std_ast.definition_for_global(base).is_some() {
+                    let std_doc = self.doc_map.get(&self.std_uri);
+                    let std_range_fn = |range: fennel_parser::TextRange| -> Range {
+                        if let Some(doc) = &std_doc {
+                            lsp_range(doc, range).unwrap_or_else(|_| lsp_range_head())
+                        } else {
+                            lsp_range_head()
+                        }
+                    };
+
+                    if fields.len() > 1 {
+                        if let Some(target_lsymbol) =
+                            self.find_symbol_in_ast(&self.std_ast, &fields[1..]).await
+                        {
+                            return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                                self.std_uri.clone(),
+                                std_range_fn(target_lsymbol.token.range),
+                            ))));
+                        }
+                    } else if let Some(fennel_parser::Definition::Symbol(lsym, _)) =
+                        self.std_ast.definition_for_global(base)
+                    {
+                        return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                            self.std_uri.clone(),
+                            std_range_fn(lsym.token.range),
+                        ))));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -157,7 +252,11 @@ impl tower_lsp::LanguageServer for Backend {
             let selection_range = lsp_range(doc, sym.selection_range).ok()?;
 
             let children = sym.children.as_ref().map(|children| {
-                children.iter().filter_map(|child| to_lsp_symbol(doc, child)).collect()
+                children
+                    .iter()
+                    .filter(|child| document_symbols_view(&child.kind))
+                    .filter_map(|child| to_lsp_symbol(doc, child))
+                    .collect()
             });
 
             #[allow(deprecated)]
@@ -235,12 +334,13 @@ impl tower_lsp::LanguageServer for Backend {
         let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
         let offset = position_to_byte_offset(&doc, position)?;
 
-        let symbol = match ast.definition(offset) {
-            Some(fennel_parser::Definition::Symbol(symbol, _)) => symbol,
+        let (symbol, field_text) = match ast.definition(offset) {
+            Some(fennel_parser::Definition::Symbol(symbol, _)) => (symbol, None),
+            Some(fennel_parser::Definition::SymbolField(symbol, field)) => (symbol, Some(field)),
             _ => return Ok(None),
         };
         let range = lsp_range(&doc, symbol.token.range)?;
-        let text = symbol.token.text;
+        let text = field_text.unwrap_or(symbol.token.text);
         let scope_kind = view::scope_kind(symbol.scope.kind);
         let value_kind = view::value_kind(&symbol.value.kind);
 
@@ -288,7 +388,7 @@ impl tower_lsp::LanguageServer for Backend {
         let offset = position_to_byte_offset(&doc, position)?;
 
         let trigger = params.context.and_then(|ctx| ctx.trigger_character);
-        let (symbols, globals) = ast.completion(offset, trigger);
+        let (symbols, globals, base_value, base_text) = ast.completion(offset, trigger);
         let symbols = symbols.map(|symbol| CompletionItem {
             label: symbol.token.text.clone(),
             insert_text: Some(symbol.token.text.clone()),
@@ -296,6 +396,16 @@ impl tower_lsp::LanguageServer for Backend {
             detail: Some(symbol.token.text.clone()),
             ..Default::default()
         });
+
+        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+        let std_completions = std_symbols.map(|symbol| CompletionItem {
+            label: symbol.token.text.clone(),
+            insert_text: Some(symbol.token.text.clone()),
+            kind: Some(view::completion_scope_kind(symbol.scope.kind)),
+            detail: Some(symbol.token.text.clone()),
+            ..Default::default()
+        });
+
         let globals = globals.into_iter().flat_map(|(kind, vec)| {
             vec.into_iter().map(move |word| CompletionItem {
                 label: word.to_owned(),
@@ -305,7 +415,50 @@ impl tower_lsp::LanguageServer for Backend {
                 ..Default::default()
             })
         });
-        let completions = symbols.chain(globals).collect();
+        let mut completions: Vec<CompletionItem> =
+            symbols.chain(std_completions).chain(globals).collect();
+
+        if let Some(val) = base_value {
+            match val.kind {
+                fennel_parser::models::ValueKind::Require(Some(path)) => {
+                    if let Some(resolved_uri) = self.find_file(&uri, path)
+                        && let Some(resolved_ast) = self.get_or_parse_ast(&resolved_uri).await
+                        && let Some(keys) = resolved_ast.return_kv_keys()
+                    {
+                        for k in keys {
+                            completions.push(CompletionItem {
+                                label: k.clone(),
+                                insert_text: Some(k.clone()),
+                                kind: Some(CompletionItemKind::FIELD),
+                                detail: Some(k.clone()),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                fennel_parser::models::ValueKind::Module => {
+                    let (std_symbols, _, _, _) =
+                        self.std_ast.completion(self.std_ast.end_offset(), None);
+                    let prefix = format!("{}.", base_text);
+                    for sym in std_symbols {
+                        if sym.token.text.starts_with(&prefix) {
+                            let field = sym.token.text.strip_prefix(&prefix).unwrap();
+                            if !field.contains('.') {
+                                completions.push(CompletionItem {
+                                    label: field.to_string(),
+                                    insert_text: Some(field.to_string()),
+                                    kind: Some(CompletionItemKind::FIELD),
+                                    detail: Some(field.to_string()),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         Ok(Some(CompletionResponse::Array(completions)))
     }
 
@@ -367,6 +520,12 @@ impl tower_lsp::LanguageServer for Backend {
             globals.insert(global.clone());
         }
 
+        // Add stubs to globals to suppress errors
+        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+        for sym in std_symbols {
+            globals.insert(sym.token.text.clone());
+        }
+
         let ast = fennel_parser::parse(text.chars(), globals);
         self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), true).await;
 
@@ -399,6 +558,12 @@ impl tower_lsp::LanguageServer for Backend {
         let mut globals = HashSet::new();
         for global in &self.config.read().unwrap().fennel.diagnostics.globals {
             globals.insert(global.clone());
+        }
+
+        // Add stubs to globals to suppress errors
+        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+        for sym in std_symbols {
+            globals.insert(sym.token.text.clone());
         }
 
         let ast = fennel_parser::parse(doc.chars(), globals);
@@ -441,9 +606,20 @@ impl tower_lsp::LanguageServer for Backend {
                     .log_message(MessageType::INFO, format!("Config updated: {:?}", config))
                     .await;
                 *self.config.write().unwrap() = config.clone();
+
+                let mut globals = HashSet::new();
+                for global in &config.fennel.diagnostics.globals {
+                    globals.insert(global.clone());
+                }
+                let (std_symbols, _, _, _) =
+                    self.std_ast.completion(self.std_ast.end_offset(), None);
+                for sym in std_symbols {
+                    globals.insert(sym.token.text.clone());
+                }
+
                 for mut r in self.ast_map.iter_mut() {
                     let ast = r.value_mut();
-                    ast.update_globals(config.fennel.diagnostics.globals.clone());
+                    ast.update_globals(globals.iter().cloned().collect());
                     let uri = r.key();
                     let doc = self.doc_map.get(uri).unwrap();
                     self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
@@ -457,6 +633,27 @@ impl tower_lsp::LanguageServer for Backend {
 }
 
 impl Backend {
+    async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
+        if let Some(ast) = self.ast_map.get(uri) {
+            return Some(ast.clone());
+        }
+        if let Ok(text) = std::fs::read_to_string(uri.path()) {
+            let mut globals = HashSet::new();
+            for global in &self.config.read().unwrap().fennel.diagnostics.globals {
+                globals.insert(global.clone());
+            }
+            let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+            for sym in std_symbols {
+                globals.insert(sym.token.text.clone());
+            }
+            let ast = fennel_parser::parse(text.chars(), globals);
+            self.ast_map.insert(uri.clone(), ast.clone());
+            Some(ast)
+        } else {
+            None
+        }
+    }
+
     async fn publish_diagnostics(
         &self,
         doc: &Rope,
@@ -503,6 +700,60 @@ impl Backend {
         self.on_save_or_open_errors.remove(uri);
     }
 
+    async fn find_symbol_in_ast(
+        &self,
+        ast: &Ast,
+        fields: &[&str],
+    ) -> Option<fennel_parser::models::LSymbol> {
+        if fields.is_empty() {
+            return None;
+        }
+
+        let mut fields_iter = fields.iter();
+        let mut current_field = fields_iter.next()?;
+
+        let mut kv_table = {
+            let root =
+                fennel_parser::ast::nodes::Root::cast(SyntaxNode::new_root(ast.root.clone()))?;
+            root.return_kv_table()?
+        };
+
+        while let Some(eval_ast) = kv_table.get(*current_field) {
+            if let Some(next_field) = fields_iter.next() {
+                current_field = next_field;
+                kv_table = eval_ast.cast_kv_table()?.cast_hashmap();
+            } else {
+                // Found the last field.
+                let syntax = eval_ast.syntax();
+                let range = syntax.text_range();
+
+                // Try to follow if it's a symbol
+                if let Some(def) = ast.definition(range.start().into())
+                    && let fennel_parser::Definition::Symbol(lsym, _) = def
+                {
+                    return Some(lsym);
+                }
+
+                return Some(fennel_parser::models::LSymbol {
+                    token: fennel_parser::models::Token {
+                        text: current_field.to_string(),
+                        range: syntax.text_range(),
+                    },
+                    scope: fennel_parser::models::Scope {
+                        kind: fennel_parser::models::ScopeKind::Local,
+                        range: syntax.text_range(),
+                    },
+                    value: fennel_parser::models::Value {
+                        kind: eval_ast.eval_kind(),
+                        range: Some(syntax.text_range()),
+                    },
+                });
+            }
+        }
+
+        None
+    }
+
     fn find_file(&self, rel: &Url, path: PathBuf) -> Option<Url> {
         path.to_str()?;
 
@@ -518,12 +769,20 @@ impl Backend {
 
         let library = &self.config.read().unwrap().fennel.workspace.library;
         let library_file = library.iter().find_map(|uri| {
-            let uri_fnl = uri.0.join("fnl/").unwrap();
-            let uri_lua = uri.0.join("lua/").unwrap();
+            let mut uri = uri.0.clone();
+            if !uri.path().ends_with('/') {
+                uri.path_segments_mut().ok()?.push("");
+            }
+            let uri_fnl = uri.join("fnl/").unwrap();
+            let uri_lua = uri.join("lua/").unwrap();
             check_exist(&uri_lua, "lua", false)
                 .or_else(|| check_exist(&uri_lua, "lua", true))
                 .or_else(|| check_exist(&uri_fnl, "fnl", false))
                 .or_else(|| check_exist(&uri_fnl, "fnl", true))
+                .or_else(|| check_exist(&uri, "lua", false))
+                .or_else(|| check_exist(&uri, "lua", true))
+                .or_else(|| check_exist(&uri, "fnl", false))
+                .or_else(|| check_exist(&uri, "fnl", true))
         });
 
         let workspace_file = self.workspace_map.iter().find_map(|ref r| {
@@ -557,13 +816,22 @@ async fn main() {
         }
     };
 
+    let std_fnl = include_str!("../../../stubs/lua54.fnl");
+    let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+    let std_uri = Url::parse(STUBS_URI).expect("hardcoded stubs URI must be valid");
+
+    let doc_map = DashMap::new();
+    doc_map.insert(std_uri.clone(), Rope::from_str(std_fnl));
+
     let (service, socket) = tower_lsp::LspService::build(|client| Backend {
         client,
-        doc_map: DashMap::new(),
+        doc_map,
         ast_map: DashMap::new(),
         workspace_map: DashMap::new(),
         on_save_or_open_errors: DashMap::new(),
         config: Arc::new(RwLock::new(config::Configuration::default())),
+        std_ast,
+        std_uri,
     })
     .finish();
 
@@ -590,13 +858,16 @@ mod tests {
     use tower_lsp::LanguageServer;
 
     #[tokio::test]
-    async fn test_find_library_file() {
+    async fn test_find_telescope_builtin_normalized() {
         let dir = tempdir().unwrap();
-        let lib_path = dir.path().join("my-lib");
-        let lua_dir = lib_path.join("lua/my-lib");
+        let lib_path = dir.path().join("telescope.nvim");
+        let lua_dir = lib_path.join("lua/telescope");
         fs::create_dir_all(&lua_dir).unwrap();
-        let init_lua = lua_dir.join("init.lua");
-        fs::write(&init_lua, "return {}").unwrap();
+        let builtin_lua = lua_dir.join("builtin.lua");
+        fs::write(&builtin_lua, "return {}").unwrap();
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
 
         let (service, _) = tower_lsp::LspService::new(|client| Backend {
             client,
@@ -605,6 +876,83 @@ mod tests {
             workspace_map: DashMap::new(),
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        // Configure the library path
+        let lib_url = Url::from_directory_path(&lib_path).unwrap();
+        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+
+        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        // This is what fennel-parser produces for (require :telescope.builtin)
+        let target_path = PathBuf::from("telescope/builtin");
+
+        let resolved = backend.find_file(&base_url, target_path);
+        assert!(resolved.is_some(), "Should find telescope.builtin in library");
+        let resolved_url = resolved.unwrap();
+        assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
+    }
+
+    #[tokio::test]
+    async fn test_find_telescope_builtin() {
+        let dir = tempdir().unwrap();
+        let lib_path = dir.path().join("telescope.nvim");
+        let lua_dir = lib_path.join("lua/telescope");
+        fs::create_dir_all(&lua_dir).unwrap();
+        let builtin_lua = lua_dir.join("builtin.lua");
+        fs::write(&builtin_lua, "return {}").unwrap();
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        // Configure the library path
+        let lib_url = Url::from_directory_path(&lib_path).unwrap();
+        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+
+        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        let target_path = PathBuf::from("telescope/builtin");
+
+        let resolved = backend.find_file(&base_url, target_path);
+        assert!(resolved.is_some(), "Should find telescope/builtin in library");
+        let resolved_url = resolved.unwrap();
+        assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
+    }
+
+    #[tokio::test]
+    async fn test_find_library_file() {
+        let dir = tempdir().unwrap();
+        let lib_path = dir.path().join("my-lib");
+        let lua_dir = lib_path.join("lua/my-lib");
+        fs::create_dir_all(&lua_dir).unwrap();
+        let init_lua = lua_dir.join("init.lua");
+        fs::write(&init_lua, "return {}").unwrap();
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
         });
         let backend = service.inner();
 
@@ -625,6 +973,9 @@ mod tests {
     async fn test_print_document_symbols() {
         let code = "(local x 1)\n(fn my-func [a] (+ a x))\n(global my-global \"hello\")";
 
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
         let (service, _) = tower_lsp::LspService::new(|client| Backend {
             client,
             doc_map: DashMap::new(),
@@ -632,6 +983,8 @@ mod tests {
             workspace_map: DashMap::new(),
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
         });
         let backend = service.inner();
         let uri = Url::parse("file:///test.fnl").unwrap();
@@ -673,5 +1026,129 @@ mod tests {
             }
         }
         println!("-------------------------------\n");
+    }
+
+    #[tokio::test]
+    async fn test_goto_definition_field_access() {
+        let lib_code = "(fn setup [] (print \"setup\")) {: setup}";
+        let main_code = "(local lsp (require :mylib)) (lsp.setup)";
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        let dir = tempdir().unwrap();
+        let lib_path = dir.path().join("mylib.fnl");
+        fs::write(&lib_path, lib_code).unwrap();
+        let lib_uri = Url::from_file_path(&lib_path).unwrap();
+        backend.doc_map.insert(lib_uri.clone(), Rope::from_str(lib_code));
+
+        let main_path = dir.path().join("main.fnl");
+        fs::write(&main_path, main_code).unwrap();
+        let main_uri = Url::from_file_path(&main_path).unwrap();
+
+        backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
+        let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
+        backend.ast_map.insert(main_uri.clone(), main_ast);
+
+        // lsp.setup
+        // 0123456789012345678901234567890123456789
+        // (local lsp (require :mylib)) (lsp.setup)
+        //                              ^   ^
+        //                              30  34
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(main_uri.clone()),
+                position: Position::new(0, 34), // on "setup"
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.goto_definition(params).await.unwrap();
+        println!("\n--- Goto Definition Field Access ---");
+        if let Some(GotoDefinitionResponse::Array(locations)) = response {
+            for loc in locations {
+                println!("Location: {:?} range: {:?}", loc.uri, loc.range);
+            }
+        } else if let Some(GotoDefinitionResponse::Scalar(loc)) = response {
+            println!("Scalar Location: {:?} range: {:?}", loc.uri, loc.range);
+        } else {
+            println!("No definition found");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_goto_definition_import_macros() {
+        let macro_code = "(fn my-macro [] (print \"macro\")) {: my-macro}";
+        let main_code = "(import-macros {: my-macro} :mymacros) (my-macro)";
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        let dir = tempdir().unwrap();
+        let macro_path = dir.path().join("mymacros.fnl");
+        fs::write(&macro_path, macro_code).unwrap();
+        let macro_uri = Url::from_file_path(&macro_path).unwrap();
+        backend.doc_map.insert(macro_uri.clone(), Rope::from_str(macro_code));
+
+        let main_path = dir.path().join("main.fnl");
+        fs::write(&main_path, main_code).unwrap();
+        let main_uri = Url::from_file_path(&main_path).unwrap();
+
+        backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
+        let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
+        backend.ast_map.insert(main_uri.clone(), main_ast);
+
+        // my-macro
+        // 012345678901234567890123456789012345678901234567
+        // (import-macros {: my-macro} :mymacros) (my-macro)
+        //                                         ^
+        //                                         40
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(main_uri.clone()),
+                position: Position::new(0, 42), // on "my-macro"
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.goto_definition(params).await.unwrap();
+        println!("\n--- Goto Definition Import Macros ---");
+        if let Some(GotoDefinitionResponse::Array(locations)) = response {
+            for loc in locations {
+                println!("Location: {:?} range: {:?}", loc.uri, loc.range);
+            }
+        } else if let Some(GotoDefinitionResponse::Scalar(loc)) = response {
+            println!("Scalar Location: {:?} range: {:?}", loc.uri, loc.range);
+        } else {
+            println!("No definition found");
+        }
     }
 }

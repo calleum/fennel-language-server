@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum EvalAst {
+pub enum EvalAst {
     NilAst(NilAst),
     LastReturnAst(LastReturnAst),
     CondReturnAst(CondReturnAst),
@@ -124,9 +124,7 @@ impl EvalAst {
         };
         kind.unwrap_or(models::ValueKind::Unknown)
     }
-}
 
-impl EvalAst {
     pub fn cast_string(&self) -> Option<(String, StringKind)> {
         match self {
             Self::Sexp(n) => n.cast_string(),
@@ -140,6 +138,15 @@ impl EvalAst {
         match self {
             Self::Sexp(n) => n.cast_kv_table(),
             Self::Atom(n) => n.cast_kv_table(),
+            _ => None,
+        }
+    }
+
+    pub fn cast_path(&self) -> Option<PathBuf> {
+        match self {
+            Self::Sexp(n) => EvalAst::cast(n.0.first_child()?).and_then(|e| e.cast_path()),
+            Self::Atom(n) => EvalAst::cast(n.0.first_child()?).and_then(|e| e.cast_path()),
+            Self::Literal(n) => n.cast_path(),
             _ => None,
         }
     }
@@ -199,7 +206,7 @@ impl Literal {
         }
     }
 
-    pub(crate) fn cast_string(&self) -> Option<(String, StringKind)> {
+    pub fn cast_string(&self) -> Option<(String, StringKind)> {
         let token = self.syntax().first_token()?;
         match token.kind() {
             SyntaxKind::COLON_STRING => Some((token.text()[1..].to_string(), StringKind::Colon)),
@@ -211,7 +218,7 @@ impl Literal {
         }
     }
 
-    pub(crate) fn cast_path(&self) -> Option<PathBuf> {
+    pub fn cast_path(&self) -> Option<PathBuf> {
         let token = self.syntax().first_token()?;
         let s = match token.kind() {
             SyntaxKind::INTEGER => token.text().to_string(),
@@ -303,7 +310,7 @@ impl RightSymbol {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum StringKind {
+pub enum StringKind {
     Colon,
     Quote,
 }

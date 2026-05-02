@@ -95,7 +95,7 @@ impl Root {
         eval::EvalAst::cast(last_node)
     }
 
-    pub(crate) fn return_kv_table(&self) -> Option<HashMap<String, eval::EvalAst>> {
+    pub fn return_kv_table(&self) -> Option<HashMap<String, eval::EvalAst>> {
         self.return_value()
             .and_then(|eval_ast| eval_ast.cast_kv_table())
             .map(|kv_table| kv_table.cast_hashmap())
@@ -327,14 +327,29 @@ impl KvTable {
         })
     }
 
-    // skip non-string key
-    pub(crate) fn cast_hashmap(&self) -> HashMap<String, EvalAst> {
+    pub fn cast_hashmap(&self) -> HashMap<String, EvalAst> {
         let mut res = HashMap::new();
-        for (k, v) in self.iter() {
-            if k.is_none() || v.is_none() {
+        for n in self.syntax().children().filter(|n| n.kind() == SyntaxKind::N_KV_PAIR) {
+            if n.first_token().is_some_and(|t| t.kind() == SyntaxKind::COLON) {
+                if let Some(sym_node) = n.children().find(|n| n.kind() == SyntaxKind::N_L_R_SYMBOL)
+                    && let Some(token) = sym_node.first_token()
+                    && let Some(eval_ast) = EvalAst::cast(sym_node)
+                {
+                    res.insert(token.text().to_string(), eval_ast);
+                }
                 continue;
             }
-            let (k, v) = (k.unwrap(), v.unwrap());
+
+            let mut iter = n.children().filter_map(EvalAst::cast);
+            let k = match iter.next() {
+                Some(k) => k,
+                None => continue,
+            };
+            let v = match iter.next() {
+                Some(v) => v,
+                None => continue,
+            };
+
             if let Some((key, _)) = k.cast_string() {
                 res.insert(key, v);
             } else if k.syntax().text() == ":" {

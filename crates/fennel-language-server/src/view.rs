@@ -38,6 +38,7 @@ pub fn value_kind_to_symbol_kind(val: ValueKind) -> SymbolKind {
         ValueKind::KvTable => SymbolKind::OBJECT,
         ValueKind::Macro => SymbolKind::FUNCTION,
         ValueKind::Module => SymbolKind::MODULE,
+        ValueKind::ModuleField(_, _) => SymbolKind::FIELD,
         ValueKind::Require(_) => SymbolKind::PACKAGE,
         ValueKind::FileHandle => SymbolKind::FILE,
         ValueKind::Unknown => SymbolKind::OBJECT,
@@ -45,11 +46,30 @@ pub fn value_kind_to_symbol_kind(val: ValueKind) -> SymbolKind {
     }
 }
 
+pub fn document_symbols_view(val: &ValueKind) -> bool {
+    match val {
+        ValueKind::SeqTable
+        | ValueKind::Number
+        | ValueKind::Func
+        | ValueKind::Bool
+        | ValueKind::String
+        | ValueKind::Nil
+        | ValueKind::Match
+        | ValueKind::KvTable
+        | ValueKind::Macro
+        | ValueKind::Module
+        | ValueKind::ModuleField(_, _)
+        | ValueKind::Require(_)
+        | ValueKind::FileHandle => true,
+        ValueKind::Unknown | ValueKind::MacroParam | ValueKind::Param | ValueKind::Symbol => false,
+    }
+}
 pub(crate) fn value_kind(kind: &models::ValueKind) -> &'static str {
     match kind {
         models::ValueKind::Nil => "nil",
         models::ValueKind::Number => "number",
         models::ValueKind::Module => "module",
+        models::ValueKind::ModuleField(_, _) => "module field",
         models::ValueKind::String => "string",
         models::ValueKind::Bool => "bool",
         models::ValueKind::SeqTable => "[...]",

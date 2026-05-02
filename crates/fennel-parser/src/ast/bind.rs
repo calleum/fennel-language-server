@@ -70,11 +70,19 @@ pub(crate) trait Binding: rowan::ast::AstNode<Language = crate::FennelLanguage> 
     ) -> Option<Vec<models::LSymbol>> {
         let scope_range = scope_extend.range(&node);
 
+        let value_node = node.last_child();
+        let require_path = value_node
+            .as_ref()
+            .and_then(|n| eval::EvalAst::cast(n.clone()))
+            .and_then(|e| match e.eval_kind() {
+                models::ValueKind::Require(Some(p)) => Some(p),
+                _ => e.cast_path(),
+            });
+
         // Guess first child is a symbol
         if let Some(symbol) = Symbol::cast(node.first_token()?.parent()?) {
             let (id, ..) = symbol.id()?;
             // NOTE: should not pretend symbol pairs with value
-            let value_node = node.last_child();
             let value = if let Some(override_value_kind) = override_value_kind {
                 models::Value {
                     kind: override_value_kind,
@@ -84,7 +92,7 @@ pub(crate) trait Binding: rowan::ast::AstNode<Language = crate::FennelLanguage> 
                 let value_node = value_node?;
                 let range = value_node.text_range();
                 models::Value {
-                    kind: eval::EvalAst::cast(value_node)?.eval_kind(),
+                    kind: eval::EvalAst::cast(value_node.clone())?.eval_kind(),
                     range: Some(range),
                 }
             };
@@ -96,9 +104,46 @@ pub(crate) trait Binding: rowan::ast::AstNode<Language = crate::FennelLanguage> 
         }
 
         // else do destructuring
-        // TODO: support destructuring eval
-        let value_kind = fallback_value_kind;
+        if let Some(module_path) = require_path {
+            let mut symbols = vec![];
+            let destruct_node = node.first_child()?;
+            // Simple check for KV table destructuring {: setup}
+            for pair in destruct_node.descendants().filter(|n| {
+                n.kind() == SyntaxKind::N_ASSIGN_PATTERN_KV
+                    || n.kind() == SyntaxKind::N_IMPORT_MACROS_KV_PAIR
+            }) {
+                if let Some(sym_node) = pair.children().find_map(Symbol::cast)
+                    && let Some((id, ..)) = sym_node.id()
+                {
+                    // The field name is either the key or the symbol itself
+                    // For {: setup}, the key is ":", and the symbol is "setup"
+                    let field_name =
+                        if pair.first_token().is_some_and(|t| t.kind() == SyntaxKind::COLON) {
+                            id.text.clone()
+                        } else {
+                            // TODO: handle complex keys
+                            id.text.clone()
+                        };
 
+                    symbols.push(models::LSymbol {
+                        token: id,
+                        scope: models::Scope { kind: scope_kind, range: scope_range },
+                        value: models::Value {
+                            kind: models::ValueKind::ModuleField(
+                                module_path.clone(),
+                                vec![field_name],
+                            ),
+                            range: None,
+                        },
+                    });
+                }
+            }
+            if !symbols.is_empty() {
+                return Some(symbols);
+            }
+        }
+
+        // fallback to original destructuring logic
         let tokens = node
             .first_child()?
             .descendants()
@@ -110,7 +155,7 @@ pub(crate) trait Binding: rowan::ast::AstNode<Language = crate::FennelLanguage> 
             .map(|t| models::LSymbol {
                 token: t,
                 scope: models::Scope { kind: scope_kind, range: scope_range },
-                value: models::Value { kind: value_kind.clone(), range: None },
+                value: models::Value { kind: fallback_value_kind.clone(), range: None },
             })
             .collect();
         Some(symbols)
