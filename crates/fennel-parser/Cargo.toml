@@ -10,3 +10,7 @@ workspace = true
 regex = { workspace = true }
 rowan = { workspace = true }
 thiserror = { workspace = true }
+
+[[bin]]
+name = "fennel-ast-print"
+path = "bin/fennel_ast_print.rs"

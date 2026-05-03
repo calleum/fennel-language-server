@@ -53,12 +53,6 @@ impl tower_lsp::LanguageServer for Backend {
         if let Some(settings) = params.initialization_options
             && let Ok(config) = serde_json::from_value::<config::Configuration>(settings)
         {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Initial config from options: {:?}", config),
-                )
-                .await;
             *self.config.write().unwrap() = config;
         }
 
@@ -284,19 +278,78 @@ impl tower_lsp::LanguageServer for Backend {
         let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
         let offset = position_to_byte_offset(&doc, position)?;
 
-        let references = ast.reference(offset);
-        if references.is_none() {
+        // Get in-file references — handles both definition and usage offsets
+        let Some(in_file_refs) = ast.reference(offset) else {
             return Ok(None);
-        }
-        let references = references.unwrap();
-        if references.is_empty() {
+        };
+        if in_file_refs.is_empty() {
             return Err(Error::request_cancelled());
         }
-        let mut locations = Vec::with_capacity(references.len());
-        for reference in references {
+
+        // Get the symbol name via definition() (works on both def and usage sites)
+        let symbol_name = match ast.definition(offset) {
+            Some(fennel_parser::Definition::Symbol(lsym, _)) => lsym.token.text.clone(),
+            Some(fennel_parser::Definition::SymbolField(lsym, field)) => {
+                // For field accesses like "foo.bar", search by the base
+                if let Some(base) = field.split('.').next() {
+                    format!("{}.{}", lsym.token.text, base)
+                } else {
+                    lsym.token.text.clone()
+                }
+            }
+            _ => {
+                return Ok(Some(
+                    in_file_refs
+                        .iter()
+                        .filter_map(|r| lsp_range(&doc, *r).ok())
+                        .map(|range| Location::new(uri.clone(), range))
+                        .collect(),
+                ));
+            }
+        };
+
+        // Drop DashMap guards before iterating the map mutably (avoids deadlock)
+        drop(ast);
+        drop(doc);
+
+        let fields: Vec<&str> = symbol_name.split('.').collect();
+        eprintln!(
+            ">>> references: looking for '{}' across {} files",
+            symbol_name,
+            self.ast_map.len()
+        );
+
+        // Search other files for the same symbol
+        let mut cross_file_refs: HashMap<Url, Vec<models::RSymbol>> = HashMap::new();
+        for mut r in self.ast_map.iter_mut() {
+            let ast = r.value_mut();
+            if let Some(sym) = self.find_r_symbol_in_ast(ast, &fields).await {
+                cross_file_refs.entry(r.key().clone()).or_default().push(sym);
+            }
+        }
+
+        let mut locations: Vec<Location> = Vec::new();
+
+        // Cross-file references
+        for (ref_uri, symbols) in &cross_file_refs {
+            let ref_doc = match self.doc_map.get(ref_uri) {
+                Some(d) => d,
+                None => continue,
+            };
+            for sym in symbols {
+                if let Ok(range) = lsp_range(&ref_doc, sym.token.range) {
+                    locations.push(Location::new(ref_uri.clone(), range));
+                }
+            }
+        }
+
+        // In-file references (re-acquire guards)
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        for reference in in_file_refs {
             let range = lsp_range(&doc, reference)?;
             locations.push(Location::new(uri.clone(), range));
         }
+        eprintln!(">>> references: returning {} locations", locations.len());
         Ok(Some(locations))
     }
 
@@ -499,7 +552,7 @@ impl tower_lsp::LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.client.log_message(MessageType::INFO, "initialized!").await;
+        self.client.log_message(MessageType::LOG, "initialized!").await;
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -507,7 +560,7 @@ impl tower_lsp::LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.client.log_message(MessageType::INFO, "file opened!").await;
+        self.client.log_message(MessageType::LOG, "file opened!").await;
         let uri = params.text_document.uri;
         let text = params.text_document.text;
         let version = params.text_document.version;
@@ -602,9 +655,6 @@ impl tower_lsp::LanguageServer for Backend {
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         match <config::Configuration as serde::Deserialize>::deserialize(params.settings) {
             Ok(config) => {
-                self.client
-                    .log_message(MessageType::INFO, format!("Config updated: {:?}", config))
-                    .await;
                 *self.config.write().unwrap() = config.clone();
 
                 let mut globals = HashSet::new();
@@ -698,6 +748,43 @@ impl Backend {
         self.doc_map.remove(uri);
         self.ast_map.remove(uri);
         self.on_save_or_open_errors.remove(uri);
+    }
+
+    async fn find_r_symbol_in_ast(
+        &self,
+        ast: &Ast,
+        fields: &[&str],
+    ) -> Option<fennel_parser::models::RSymbol> {
+        if fields.is_empty() {
+            return None;
+        }
+
+        let mut fields_iter = fields.iter();
+        let mut current_field = fields_iter.next()?;
+
+        let mut kv_table = {
+            let root =
+                fennel_parser::ast::nodes::Root::cast(SyntaxNode::new_root(ast.root.clone()))?;
+            root.return_kv_table()?
+        };
+
+        while let Some(eval_ast) = kv_table.get(*current_field) {
+            if let Some(next_field) = fields_iter.next() {
+                current_field = next_field;
+                kv_table = eval_ast.cast_kv_table()?.cast_hashmap();
+            } else {
+                // Found the last field.
+                let syntax = eval_ast.syntax();
+                let range = syntax.text_range();
+
+                return Some(fennel_parser::models::RSymbol {
+                    token: fennel_parser::models::Token { text: current_field.to_string(), range },
+                    special: models::SpecialKind::Normal,
+                });
+            }
+        }
+
+        None
     }
 
     async fn find_symbol_in_ast(
@@ -808,6 +895,10 @@ impl Backend {
 
 #[tokio::main]
 async fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("!!! PANIC: {}", info);
+    }));
+
     let cli = cli::Cli::parse();
     let (read, write) = match &cli.cmd {
         Some(cli::Command::Lsp { cmd: cli::LspCommand::Stdio }) | None => stdio(),
@@ -1150,5 +1241,146 @@ mod tests {
         } else {
             println!("No definition found");
         }
+    }
+
+    /// Test that references work when triggered ON a function definition.
+    /// Uses a simplified version of the lspconfig.fnl setup-lsp-highlights pattern.
+    ///
+    /// Code layout:
+    ///   line 0: (fn setup-lsp-highlights [bufnr client]
+    ///   line 1:   (print bufnr client))
+    ///   line 2:
+    ///   line 3: (fn on-attach [bufnr]
+    ///   line 4:   (setup-lsp-highlights bufnr nil))
+    ///
+    /// Cursor on the definition (line 0, char 4) should find both the def
+    /// and the usage on line 4.
+    #[tokio::test]
+    async fn test_references_from_definition() {
+        let code = "\
+(fn setup-lsp-highlights [bufnr client]
+  (print bufnr client))
+
+(fn on-attach [bufnr]
+  (setup-lsp-highlights bufnr nil))";
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        let uri = Url::parse("file:///test.fnl").unwrap();
+        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
+        let ast = fennel_parser::parse(code.chars(), HashSet::new());
+        backend.ast_map.insert(uri.clone(), ast);
+
+        // Cursor on the definition "setup-lsp-highlights" at line 0, char 4
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(0, 4),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: ReferenceContext { include_declaration: true },
+        };
+
+        let response = backend.references(params).await;
+        assert!(
+            response.is_ok(),
+            "references from definition should not error, got: {:?}",
+            response
+        );
+
+        let locations = response.unwrap();
+        assert!(locations.is_some(), "should find references when cursor is on the definition");
+
+        let locations = locations.unwrap();
+        println!("\n--- References from Definition ---");
+        for loc in &locations {
+            println!(
+                "  Location: {}:{}:{}",
+                loc.uri, loc.range.start.line, loc.range.start.character,
+            );
+        }
+
+        // Should find at least 2 locations: definition + usage
+        assert!(
+            locations.len() >= 2,
+            "expected at least 2 references (def + usage), got {}",
+            locations.len(),
+        );
+
+        // One should be on line 0 (definition), one on line 4 (usage)
+        let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+        assert!(lines.contains(&0), "should include definition on line 0, got lines: {:?}", lines,);
+        assert!(lines.contains(&4), "should include usage on line 4, got lines: {:?}", lines,);
+    }
+
+    /// Test that references work when triggered ON a usage site.
+    #[tokio::test]
+    async fn test_references_from_usage() {
+        let code = "\
+(fn setup-lsp-highlights [bufnr client]
+  (print bufnr client))
+
+(fn on-attach [bufnr]
+  (setup-lsp-highlights bufnr nil))";
+
+        let std_fnl = include_str!("../../../stubs/lua54.fnl");
+        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+
+        let (service, _) = tower_lsp::LspService::new(|client| Backend {
+            client,
+            doc_map: DashMap::new(),
+            ast_map: DashMap::new(),
+            workspace_map: DashMap::new(),
+            on_save_or_open_errors: DashMap::new(),
+            config: Arc::new(RwLock::new(config::Configuration::default())),
+            std_ast,
+            std_uri: Url::parse(STUBS_URI).unwrap(),
+        });
+        let backend = service.inner();
+
+        let uri = Url::parse("file:///test.fnl").unwrap();
+        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
+        let ast = fennel_parser::parse(code.chars(), HashSet::new());
+        backend.ast_map.insert(uri.clone(), ast);
+
+        // Cursor on the usage "(setup-lsp-highlights ..." at line 4, char 3
+        //   line 4: "  (setup-lsp-highlights bufnr nil))"
+        //   chars: 0123456789...
+        //   "setup-lsp-highlights" starts at char 3
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(4, 3),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: ReferenceContext { include_declaration: true },
+        };
+
+        let response = backend.references(params).await;
+        assert!(response.is_ok(), "references from usage should not error, got: {:?}", response,);
+
+        let locations = response.unwrap();
+        assert!(locations.is_some(), "should find references when cursor is on usage");
+        let locations = locations.unwrap();
+        assert!(
+            locations.len() >= 2,
+            "expected at least 2 references (def + usage), got {}",
+            locations.len(),
+        );
     }
 }

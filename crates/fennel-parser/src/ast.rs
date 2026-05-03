@@ -175,6 +175,22 @@ impl Ast {
         let root = SyntaxNode::new_root(self.root.clone());
         self.get_children(root)
     }
+    pub fn reference_token(
+        &self,
+        token: rowan::SyntaxToken<crate::FennelLanguage>,
+    ) -> Option<Vec<TextRange>> {
+        let l_symbol = self.l_symbol(token.text_range().start().into()).cloned()?;
+
+        let mut ranges = vec![l_symbol.token.range];
+        ranges.extend(
+            self.r_symbols
+                .iter()
+                .filter(|s| l_symbol.contains_token(&s.token))
+                .map(|s| s.token.range),
+        );
+
+        Some(ranges)
+    }
 
     pub fn reference(&self, offset: u32) -> Option<Vec<TextRange>> {
         let root = SyntaxNode::new_root(self.root.clone());

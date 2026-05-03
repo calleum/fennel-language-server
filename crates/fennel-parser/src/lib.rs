@@ -10,7 +10,7 @@ use std::collections::HashSet;
 pub use ast::{Action, Ast, AstDocumentSymbol, AstSymbolInformation, Definition, models};
 pub use errors::{Error, ErrorKind};
 pub use rowan::TextRange;
-pub(crate) use syntax::SyntaxKind;
+pub use syntax::SyntaxKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FennelLanguage {}
@@ -31,7 +31,7 @@ pub type SyntaxNode = rowan::SyntaxNode<FennelLanguage>;
 pub type SyntaxToken = rowan::SyntaxToken<FennelLanguage>;
 pub type SyntaxElement = rowan::SyntaxElement<FennelLanguage>;
 
-pub fn parse(text: impl Iterator<Item = char>, globals: HashSet<String>) -> ast::Ast {
+pub fn parse(text: impl Iterator<Item = char>, globals: HashSet<String>) -> Ast {
     let parsed = parser::Parser::new(Box::new(text)).parse();
-    ast::Ast::new(parsed.green_node, parsed.errors, globals)
+    Ast::new(parsed.green_node, parsed.errors, globals)
 }
