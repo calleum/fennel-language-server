@@ -9,8 +9,8 @@ pub(crate) fn text_range_with_offset(
     offset: (i32, i32),
 ) -> TextRange {
     TextRange::new(
-        TextSize::from((range.start as i32 + offset.0) as u32),
-        TextSize::from((range.end as i32 + offset.1) as u32),
+        TextSize::from((range.start as i32 + offset.0).unsigned_abs()),
+        TextSize::from((range.end as i32 + offset.1).unsigned_abs()),
     )
 }
 

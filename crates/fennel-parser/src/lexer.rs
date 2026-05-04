@@ -12,7 +12,7 @@ pub(crate) struct Token {
 }
 
 impl Token {
-    #[allow(unused)]
+    #[cfg(test)]
     pub(crate) fn new(kind: SyntaxKind, text: &str, range: Range<usize>) -> Self {
         Self { kind, text: text.to_string(), range }
     }
@@ -50,19 +50,22 @@ static RE_FLOAT: LazyLock<Regex> = LazyLock::new(|| {
         r"[+-]?0x[0-9a-f]+[0-9a-f_]*\.?[0-9_]*",
         r"[eE][+-]?[0-9_]+"
     ))
-    .unwrap()
+    .expect("float regex is valid")
 });
 
 const BOUND: [char; 8] = ['(', ')', '[', ']', '{', '}', ',', '`'];
 
-static RE_INTEGER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^{}$", r#"[+-]?(0x)?[0-9][0-9_]*"#)).unwrap());
+static RE_INTEGER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!("^{}$", r#"[+-]?(0x)?[0-9][0-9_]*"#)).expect("integer regex is valid")
+});
 
-static RE_COLON_STRING: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^{}$", r#":[^"'~;@]+"#)).unwrap());
+static RE_COLON_STRING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!("^{}$", r#":[^"'~;@]+"#)).expect("colon string regex is valid")
+});
 
-static RE_SYMBOL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^{}$", r#"[^.:#"'~;,@`&][^"'~;,@`&]*"#)).unwrap());
+static RE_SYMBOL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!("^{}$", r#"[^.:#\"'~;,@`&][^\"'~;,@`&]*"#)).expect("symbol regex is valid")
+});
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token;
@@ -82,7 +85,12 @@ impl<'a> Iterator for Lexer<'a> {
             }
         }
 
-        let head = self.current.chars().next().unwrap();
+        // SAFETY: current is non-empty (guaranteed by the block above)
+        #[expect(
+            clippy::unwrap_in_result,
+            reason = "current is guaranteed non-empty by control flow above"
+        )]
+        let head = self.current.chars().next().expect("current is non-empty");
         let head_kind = kind_by_char(head);
         let token_kind = match head_kind {
             TokenKind::Word => {
@@ -188,7 +196,8 @@ impl<'a> Iterator for Lexer<'a> {
 pub(crate) fn validate(s: &str, kind: SyntaxKind) -> bool {
     let mut lexer = Lexer::new(Box::new(s.chars()));
     if let Some(token) = lexer.next() {
-        token.kind == kind && lexer.next().unwrap().kind == SyntaxKind::END
+        token.kind == kind
+            && lexer.next().expect("lexer always returns at least END").kind == SyntaxKind::END
     } else {
         false
     }
@@ -205,7 +214,7 @@ pub(crate) fn validate_symbol(symbol: &str) -> bool {
                 return false;
             }
         }
-        if lexer.next().unwrap().kind != SyntaxKind::END {
+        if lexer.next().expect("lexer always returns at least END").kind != SyntaxKind::END {
             return false;
         }
         return !crate::builtins::RESERVED_SET.contains(&token.text.as_str());
@@ -252,7 +261,7 @@ mod tests {
             };
             assert_eq!(n, Some(token.to_owned()));
         });
-        assert_eq!(lex.next().unwrap().kind, SyntaxKind::END);
+        assert_eq!(lex.next().expect("lexer always returns END").kind, SyntaxKind::END);
     }
 
     #[test]

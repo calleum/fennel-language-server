@@ -209,10 +209,12 @@ impl Literal {
     pub fn cast_string(&self) -> Option<(String, StringKind)> {
         let token = self.syntax().first_token()?;
         match token.kind() {
-            SyntaxKind::COLON_STRING => Some((token.text()[1..].to_string(), StringKind::Colon)),
+            SyntaxKind::COLON_STRING => {
+                Some((token.text().get(1..)?.to_string(), StringKind::Colon))
+            }
             SyntaxKind::QUOTE_STRING => {
                 let text = token.text();
-                Some((text[1..text.len() - 1].to_string(), StringKind::Quote))
+                Some((text.get(1..text.len() - 1)?.to_string(), StringKind::Quote))
             }
             _ => None,
         }
@@ -299,7 +301,7 @@ impl RightSymbol {
     pub fn eval_kind(&self) -> Option<models::ValueKind> {
         let node = self.syntax();
         if node.children_with_tokens().any(|t| {
-            let kind = t.as_token().unwrap().kind();
+            let kind = t.as_token().expect("filtering element tokens").kind();
             kind == SyntaxKind::SYMBOL_FIELD || kind == SyntaxKind::SYMBOL_METHOD
         }) {
             None

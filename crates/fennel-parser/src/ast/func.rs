@@ -17,7 +17,7 @@ impl FuncAst {
         Some((name, is_pure))
     }
 
-    #[allow(unused)]
+    #[expect(unused, reason = "public API for external consumers")]
     pub(crate) fn l_name(&self) -> Option<models::Token> {
         self.name().and_then(|(name, is_pure)| {
             if is_pure { name.first_token().map(models::Token::from) } else { None }

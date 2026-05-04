@@ -101,7 +101,10 @@ impl FuncAst {
                 return None;
             }
             node.children_with_tokens()
-                .find(|t| t.as_token().unwrap().kind() == SyntaxKind::SYMBOL_METHOD)
+                .find(|t| {
+                    t.as_token().expect("filtering element tokens").kind()
+                        == SyntaxKind::SYMBOL_METHOD
+                })
                 .map(|_| Error::new(node.text_range(), MethodNotAllowed))
         })
     }
@@ -142,7 +145,7 @@ impl BindingSymbol {
     pub(crate) fn field_and_method(&self) -> Option<Error> {
         let node = self.syntax();
         node.children_with_tokens().find_map(|t| {
-            let kind = t.as_token().unwrap().kind();
+            let kind = t.as_token().expect("filtering element tokens").kind();
             match kind {
                 SyntaxKind::SYMBOL_FIELD | SyntaxKind::SYMBOL_METHOD => {
                     Some(Error::new(node.text_range(), FieldAndMethodNotAllowed))
@@ -156,11 +159,11 @@ impl BindingSymbol {
 impl RightSymbol {
     fn method_call(&self) -> Option<Error> {
         let node = self.syntax();
-        if node.parent().unwrap().kind() == SyntaxKind::N_SYMBOL_CALL {
+        if node.parent()?.kind() == SyntaxKind::N_SYMBOL_CALL {
             return None;
         }
         node.children_with_tokens().find_map(|t| {
-            let kind = t.as_token().unwrap().kind();
+            let kind = t.as_token().expect("filtering element tokens").kind();
             match kind {
                 SyntaxKind::SYMBOL_METHOD => Some(Error::new(node.text_range(), MethodNotAllowed)),
                 _ => None,
@@ -175,19 +178,28 @@ impl MatchTry {
         let catchs: Vec<SyntaxNode> = node
             .children()
             .filter(|n| n.kind() == SyntaxKind::N_MATCH_TRY_CLAUSE)
-            .filter(|n| n.first_child().unwrap().kind() == SyntaxKind::N_CATCH_LIST)
+            .filter(|n| {
+                n.first_child().expect("clause has first child").kind() == SyntaxKind::N_CATCH_LIST
+            })
             .collect();
         let mut res = vec![];
 
         if catchs.len() > 1 {
             res.extend(
-                catchs[..catchs.len() - 1]
+                catchs
+                    .get(..catchs.len() - 1)
+                    .expect("catchs is non-empty")
                     .iter()
                     .map(|n| Some(Error::new(n.text_range(), MultiCatch))),
             );
         }
         if let Some(last_catch) = catchs.last() {
-            let last_clause = self.syntax().last_child().unwrap().first_child().unwrap();
+            let last_clause = self
+                .syntax()
+                .last_child()
+                .expect("MatchTry has children")
+                .first_child()
+                .expect("last child has first child");
             if last_clause.kind() != SyntaxKind::N_CATCH_LIST {
                 res.push(Some(Error::new(last_catch.text_range(), CatchNotLast)));
             }
@@ -200,7 +212,7 @@ impl MatchTry {
 impl RequireMacros {
     pub(crate) fn depcrated(&self) -> Error {
         Error::new(
-            self.syntax().first_token().unwrap().text_range(),
+            self.syntax().first_token().expect("RequireMacros has a token").text_range(),
             Deprecated("0.4.0", "import-macros"),
         )
     }
@@ -209,7 +221,7 @@ impl RequireMacros {
 impl PickArgs {
     pub(crate) fn depcrated(&self) -> Error {
         Error::new(
-            self.syntax().first_token().unwrap().text_range(),
+            self.syntax().first_token().expect("PickArgs has a token").text_range(),
             Deprecated("0.10.0", "pick-values"),
         )
     }
@@ -218,7 +230,7 @@ impl PickArgs {
 impl Global {
     pub(crate) fn depcrated(&self) -> Error {
         Error::new(
-            self.syntax().first_token().unwrap().text_range(),
+            self.syntax().first_token().expect("Global has a token").text_range(),
             Deprecated("1.1.0", "_G table"),
         )
     }
@@ -226,7 +238,7 @@ impl Global {
 
 impl IntoClause {
     pub(crate) fn depcrated(&self) -> Option<Error> {
-        let token = self.syntax().first_token().unwrap();
+        let token = self.syntax().first_token()?;
         if token.text().starts_with(':') {
             Some(Error::new(token.text_range(), Deprecated("1.2.0", "&into")))
         } else {
@@ -237,7 +249,7 @@ impl IntoClause {
 
 impl UntilClause {
     pub(crate) fn depcrated(&self) -> Option<Error> {
-        let token = self.syntax().first_token().unwrap();
+        let token = self.syntax().first_token()?;
         if token.text().starts_with(':') {
             Some(Error::new(token.text_range(), Deprecated("1.2.0", "&until")))
         } else {

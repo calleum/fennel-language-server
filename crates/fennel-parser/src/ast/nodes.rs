@@ -297,7 +297,7 @@ impl KvTable {
             .filter(|n| n.kind() == SyntaxKind::N_KV_PAIR)
             .map(|n| {
                 (
-                    n.first_child().unwrap(),
+                    n.first_child().expect("KV pair has key child"),
                     n.children().skip(1).find(|n| n.kind() == SyntaxKind::N_VALUE),
                 )
             })

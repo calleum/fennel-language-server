@@ -11,10 +11,11 @@ fn main() {
         process::exit(1);
     }
 
-    let source = match fs::read_to_string(&args[1]) {
+    let path = args.get(1).expect("expected file argument");
+    let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error reading {}: {}", args[1], e);
+            eprintln!("error reading {}: {}", path, e);
             process::exit(1);
         }
     };
@@ -179,5 +180,5 @@ fn truncate(s: &str, max_chars: usize) -> String {
         return format!("{:?}", s);
     }
     let end = s.char_indices().take(max_chars).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
-    format!("{:?}...", &s[..end])
+    format!("{:?}...", s.get(..end).expect("end is at valid char boundary"))
 }

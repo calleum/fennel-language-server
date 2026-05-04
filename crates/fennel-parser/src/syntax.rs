@@ -2,8 +2,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
-#[allow(non_camel_case_types)]
-#[allow(clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, reason = "syntax kind names follow Fennel AST node conventions")]
 pub enum SyntaxKind {
     SYMBOL,
     SYMBOL_FIELD,
@@ -264,12 +263,18 @@ impl fmt::Display for SyntaxKind {
                 if raw.starts_with("N_") {
                     format!(
                         "node `{}`",
-                        raw.strip_prefix("N_").unwrap().to_lowercase().replace('_', " ")
+                        raw.strip_prefix("N_")
+                            .expect("checked starts_with above")
+                            .to_lowercase()
+                            .replace('_', " ")
                     )
                 } else if raw.starts_with("KEYWORD_") {
                     format!(
                         "keyword `{}`",
-                        raw.strip_prefix("KEYWORD_").unwrap().to_lowercase().replace('_', "-")
+                        raw.strip_prefix("KEYWORD_")
+                            .expect("checked starts_with above")
+                            .to_lowercase()
+                            .replace('_', "-")
                     )
                 } else {
                     raw
@@ -400,9 +405,11 @@ pub(crate) const TOKEN: &[(&str, SyntaxKind)] = &[
 
 impl From<u16> for SyntaxKind {
     #[inline]
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code, reason = "transmute is guarded by assertion ensuring validity")]
     fn from(d: u16) -> Self {
         assert!(d <= (Self::ROOT as u16));
+        // SAFETY: The assertion above guarantees `d` is a valid discriminant of SyntaxKind,
+        // which is `#[repr(u16)]`, so transmuting u16 -> Self is sound.
         unsafe { std::mem::transmute::<u16, Self>(d) }
     }
 }

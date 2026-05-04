@@ -23,6 +23,7 @@ use tower_lsp::{
     jsonrpc::{Error, Result},
     lsp_types::*,
 };
+use walkdir::WalkDir;
 
 use crate::view::{document_symbols_view, value_kind_to_symbol_kind};
 
@@ -45,15 +46,22 @@ struct Backend {
 impl tower_lsp::LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         if let Some(folders) = params.workspace_folders {
+            eprintln!("{folders:?}");
             folders.into_iter().for_each(|folder| {
                 self.workspace_map.insert(folder.uri, folder.name);
             });
+            for fol in self.workspace_map.iter() {
+                let files = collect_fnl_filepaths(fol.key().clone())?;
+                for f in &files {
+                    self.get_or_parse_ast(f).await;
+                }
+            }
         }
 
         if let Some(settings) = params.initialization_options
             && let Ok(config) = serde_json::from_value::<config::Configuration>(settings)
         {
-            *self.config.write().unwrap() = config;
+            *self.config.write().map_err(|_err| Error::internal_error())? = config;
         }
 
         Ok(InitializeResult {
@@ -193,7 +201,9 @@ impl tower_lsp::LanguageServer for Backend {
                     .ok_or_else(Error::invalid_request)?;
                 let text = r_symbol.token.text.as_str();
                 let fields: Vec<&str> = text.split('.').collect();
-                let base = fields[0];
+                let Some(base) = fields.first() else {
+                    return Ok(None);
+                };
 
                 if self.std_ast.definition_for_global(base).is_some() {
                     let std_doc = self.doc_map.get(&self.std_uri);
@@ -206,8 +216,12 @@ impl tower_lsp::LanguageServer for Backend {
                     };
 
                     if fields.len() > 1 {
-                        if let Some(target_lsymbol) =
-                            self.find_symbol_in_ast(&self.std_ast, &fields[1..]).await
+                        if let Some(target_lsymbol) = self
+                            .find_symbol_in_ast(
+                                &self.std_ast,
+                                fields.get(1..).ok_or_else(Error::invalid_request)?,
+                            )
+                            .await
                         {
                             return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
                                 self.std_uri.clone(),
@@ -253,7 +267,7 @@ impl tower_lsp::LanguageServer for Backend {
                     .collect()
             });
 
-            #[allow(deprecated)]
+            #[expect(deprecated, reason = "deprecated is deprecated")]
             Some(DocumentSymbol {
                 name: sym.name.clone(),
                 detail: sym.detail.clone(),
@@ -321,8 +335,8 @@ impl tower_lsp::LanguageServer for Backend {
 
         // Search other files for the same symbol
         let mut cross_file_refs: HashMap<Url, Vec<models::RSymbol>> = HashMap::new();
-        for mut r in self.ast_map.iter_mut() {
-            let ast = r.value_mut();
+        for r in self.ast_map.iter() {
+            let ast = r.value();
             if let Some(sym) = self.find_r_symbol_in_ast(ast, &fields).await {
                 cross_file_refs.entry(r.key().clone()).or_default().push(sym);
             }
@@ -495,7 +509,11 @@ impl tower_lsp::LanguageServer for Backend {
                     let prefix = format!("{}.", base_text);
                     for sym in std_symbols {
                         if sym.token.text.starts_with(&prefix) {
-                            let field = sym.token.text.strip_prefix(&prefix).unwrap();
+                            let field = sym
+                                .token
+                                .text
+                                .strip_prefix(&prefix)
+                                .ok_or_else(Error::invalid_request)?;
                             if !field.contains('.') {
                                 completions.push(CompletionItem {
                                     label: field.to_string(),
@@ -569,7 +587,14 @@ impl tower_lsp::LanguageServer for Backend {
         self.doc_map.insert(uri.clone(), doc.clone());
 
         let mut globals = HashSet::new();
-        for global in &self.config.read().unwrap().fennel.diagnostics.globals {
+        for global in &self
+            .config
+            .read()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .diagnostics
+            .globals
+        {
             globals.insert(global.clone());
         }
 
@@ -598,7 +623,8 @@ impl tower_lsp::LanguageServer for Backend {
 
         params.content_changes.iter().for_each(|change| {
             if let Some(lsp_range) = change.range {
-                let range = rope_range(&doc, lsp_range).unwrap();
+                let range =
+                    rope_range(&doc, lsp_range).expect("LSP range should be valid for document");
                 doc.remove(range.clone());
                 if !change.text.is_empty() {
                     doc.insert(range.start, &change.text);
@@ -609,7 +635,14 @@ impl tower_lsp::LanguageServer for Backend {
         });
 
         let mut globals = HashSet::new();
-        for global in &self.config.read().unwrap().fennel.diagnostics.globals {
+        for global in &self
+            .config
+            .read()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .diagnostics
+            .globals
+        {
             globals.insert(global.clone());
         }
 
@@ -627,15 +660,13 @@ impl tower_lsp::LanguageServer for Backend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
-        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request);
-        if ast.is_err() {
+        let Some(ast) = self.ast_map.get(&uri) else {
             return;
-        }
-        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request);
-        if doc.is_err() {
+        };
+        let Some(doc) = self.doc_map.get(&uri) else {
             return;
-        }
-        self.publish_diagnostics(&doc.unwrap(), uri, &ast.unwrap(), None, true).await;
+        };
+        self.publish_diagnostics(&doc, uri, &ast, None, true).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -655,7 +686,7 @@ impl tower_lsp::LanguageServer for Backend {
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         match <config::Configuration as serde::Deserialize>::deserialize(params.settings) {
             Ok(config) => {
-                *self.config.write().unwrap() = config.clone();
+                *self.config.write().expect("config lock should not be poisoned") = config.clone();
 
                 let mut globals = HashSet::new();
                 for global in &config.fennel.diagnostics.globals {
@@ -671,7 +702,10 @@ impl tower_lsp::LanguageServer for Backend {
                     let ast = r.value_mut();
                     ast.update_globals(globals.iter().cloned().collect());
                     let uri = r.key();
-                    let doc = self.doc_map.get(uri).unwrap();
+                    let doc = self
+                        .doc_map
+                        .get(uri)
+                        .expect("document should exist in doc_map if it exists in ast_map");
                     self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
                 }
             }
@@ -689,15 +723,27 @@ impl Backend {
         }
         if let Ok(text) = std::fs::read_to_string(uri.path()) {
             let mut globals = HashSet::new();
-            for global in &self.config.read().unwrap().fennel.diagnostics.globals {
+            for global in &self
+                .config
+                .read()
+                .expect("config lock should not be poisoned")
+                .fennel
+                .diagnostics
+                .globals
+            {
                 globals.insert(global.clone());
             }
             let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
             for sym in std_symbols {
                 globals.insert(sym.token.text.clone());
             }
+
             let ast = fennel_parser::parse(text.chars(), globals);
             self.ast_map.insert(uri.clone(), ast.clone());
+
+            let doc = Rope::from_str(&text);
+            self.doc_map.insert(uri.clone(), doc);
+
             Some(ast)
         } else {
             None
@@ -846,7 +892,7 @@ impl Backend {
 
         let check_exist = |rel: &Url, ext: &str, init: bool| -> Option<Url> {
             let path = if init { path.join("init") } else { path.clone() };
-            if let Ok(url) = rel.join(path.with_extension(ext).to_str().unwrap())
+            if let Ok(url) = rel.join(path.with_extension(ext).to_str()?)
                 && std::fs::metadata(url.path()).map(|m| m.is_file()).unwrap_or(false)
             {
                 return Some(url);
@@ -854,14 +900,20 @@ impl Backend {
             None
         };
 
-        let library = &self.config.read().unwrap().fennel.workspace.library;
+        let library = &self
+            .config
+            .read()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .workspace
+            .library;
         let library_file = library.iter().find_map(|uri| {
             let mut uri = uri.0.clone();
             if !uri.path().ends_with('/') {
                 uri.path_segments_mut().ok()?.push("");
             }
-            let uri_fnl = uri.join("fnl/").unwrap();
-            let uri_lua = uri.join("lua/").unwrap();
+            let uri_fnl = uri.join("fnl/").ok()?;
+            let uri_lua = uri.join("lua/").ok()?;
             check_exist(&uri_lua, "lua", false)
                 .or_else(|| check_exist(&uri_lua, "lua", true))
                 .or_else(|| check_exist(&uri_fnl, "fnl", false))
@@ -879,7 +931,7 @@ impl Backend {
                 return None;
             };
 
-            let uri_fnl = uri.join("fnl/").unwrap();
+            let uri_fnl = uri.join("fnl/").ok()?;
             check_exist(&uri_fnl, "fnl", false).or_else(|| check_exist(&uri_fnl, "fnl", true))
         });
 
@@ -935,10 +987,23 @@ fn stdio() -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {
 }
 
 async fn tcp_listen(address: &str) -> (Box<dyn AsyncRead + Unpin>, Box<dyn AsyncWrite + Unpin>) {
-    let listener = TcpListener::bind(address).await.unwrap();
-    let (stream, _) = listener.accept().await.unwrap();
+    let listener = TcpListener::bind(address).await.expect("failed to bind TCP listener");
+    let (stream, _) = listener.accept().await.expect("failed to accept TCP connection");
     let (read, write) = tokio::io::split(stream);
     (Box::new(read), Box::new(write))
+}
+
+fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(root.to_file_path().map_err(|_path| Error::internal_error())?)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let f_url = Url::from_file_path(entry.path()).map_err(|_url| Error::internal_error())?;
+        paths.push(f_url);
+    }
+    Ok(paths)
 }
 
 #[cfg(test)]
@@ -950,12 +1015,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_telescope_builtin_normalized() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("should create temp dir");
         let lib_path = dir.path().join("telescope.nvim");
         let lua_dir = lib_path.join("lua/telescope");
-        fs::create_dir_all(&lua_dir).unwrap();
+        fs::create_dir_all(&lua_dir).expect("should create directory");
         let builtin_lua = lua_dir.join("builtin.lua");
-        fs::write(&builtin_lua, "return {}").unwrap();
+        fs::write(&builtin_lua, "return {}").expect("should write file");
 
         let std_fnl = include_str!("../../../stubs/lua54.fnl");
         let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
@@ -968,32 +1033,39 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
         // Configure the library path
-        let lib_url = Url::from_directory_path(&lib_path).unwrap();
-        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+        let lib_url =
+            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
+        backend
+            .config
+            .write()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .workspace
+            .library = vec![config::Url(lib_url)];
 
-        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
         // This is what fennel-parser produces for (require :telescope.builtin)
         let target_path = PathBuf::from("telescope/builtin");
 
         let resolved = backend.find_file(&base_url, target_path);
         assert!(resolved.is_some(), "Should find telescope.builtin in library");
-        let resolved_url = resolved.unwrap();
+        let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
     }
 
     #[tokio::test]
     async fn test_find_telescope_builtin() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("should create temp dir");
         let lib_path = dir.path().join("telescope.nvim");
         let lua_dir = lib_path.join("lua/telescope");
-        fs::create_dir_all(&lua_dir).unwrap();
+        fs::create_dir_all(&lua_dir).expect("should create directory");
         let builtin_lua = lua_dir.join("builtin.lua");
-        fs::write(&builtin_lua, "return {}").unwrap();
+        fs::write(&builtin_lua, "return {}").expect("should write file");
 
         let std_fnl = include_str!("../../../stubs/lua54.fnl");
         let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
@@ -1006,31 +1078,38 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
         // Configure the library path
-        let lib_url = Url::from_directory_path(&lib_path).unwrap();
-        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+        let lib_url =
+            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
+        backend
+            .config
+            .write()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .workspace
+            .library = vec![config::Url(lib_url)];
 
-        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
         let target_path = PathBuf::from("telescope/builtin");
 
         let resolved = backend.find_file(&base_url, target_path);
         assert!(resolved.is_some(), "Should find telescope/builtin in library");
-        let resolved_url = resolved.unwrap();
+        let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
     }
 
     #[tokio::test]
     async fn test_find_library_file() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("should create temp dir");
         let lib_path = dir.path().join("my-lib");
         let lua_dir = lib_path.join("lua/my-lib");
-        fs::create_dir_all(&lua_dir).unwrap();
+        fs::create_dir_all(&lua_dir).expect("should create directory");
         let init_lua = lua_dir.join("init.lua");
-        fs::write(&init_lua, "return {}").unwrap();
+        fs::write(&init_lua, "return {}").expect("should write file");
 
         let std_fnl = include_str!("../../../stubs/lua54.fnl");
         let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
@@ -1043,20 +1122,27 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
         // Configure the library path
-        let lib_url = Url::from_directory_path(&lib_path).unwrap();
-        backend.config.write().unwrap().fennel.workspace.library = vec![config::Url(lib_url)];
+        let lib_url =
+            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
+        backend
+            .config
+            .write()
+            .expect("config lock should not be poisoned")
+            .fennel
+            .workspace
+            .library = vec![config::Url(lib_url)];
 
-        let base_url = Url::parse("file:///dummy.fnl").unwrap();
+        let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
         let target_path = PathBuf::from("my-lib");
 
         let resolved = backend.find_file(&base_url, target_path);
         assert!(resolved.is_some());
-        let resolved_url = resolved.unwrap();
+        let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("my-lib/lua/my-lib/init.lua"));
     }
 
@@ -1075,10 +1161,10 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
-        let uri = Url::parse("file:///test.fnl").unwrap();
+        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
 
         backend.doc_map.insert(uri.clone(), Rope::from_str(code));
         let ast = fennel_parser::parse(code.chars(), HashSet::new());
@@ -1090,7 +1176,11 @@ mod tests {
             partial_result_params: PartialResultParams::default(),
         };
 
-        let response = backend.document_symbol(params).await.unwrap().unwrap();
+        let response = backend
+            .document_symbol(params)
+            .await
+            .expect("document_symbol should not error")
+            .expect("should return symbols");
 
         println!("\n--- Document Symbols Output ---");
         println!("{code}");
@@ -1135,19 +1225,19 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("should create temp dir");
         let lib_path = dir.path().join("mylib.fnl");
-        fs::write(&lib_path, lib_code).unwrap();
-        let lib_uri = Url::from_file_path(&lib_path).unwrap();
+        fs::write(&lib_path, lib_code).expect("should write file");
+        let lib_uri = Url::from_file_path(&lib_path).expect("path should be a valid file URL");
         backend.doc_map.insert(lib_uri.clone(), Rope::from_str(lib_code));
 
         let main_path = dir.path().join("main.fnl");
-        fs::write(&main_path, main_code).unwrap();
-        let main_uri = Url::from_file_path(&main_path).unwrap();
+        fs::write(&main_path, main_code).expect("should write file");
+        let main_uri = Url::from_file_path(&main_path).expect("path should be a valid file URL");
 
         backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
         let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
@@ -1168,7 +1258,8 @@ mod tests {
             partial_result_params: PartialResultParams::default(),
         };
 
-        let response = backend.goto_definition(params).await.unwrap();
+        let response =
+            backend.goto_definition(params).await.expect("goto_definition should not error");
         println!("\n--- Goto Definition Field Access ---");
         if let Some(GotoDefinitionResponse::Array(locations)) = response {
             for loc in locations {
@@ -1197,19 +1288,19 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("should create temp dir");
         let macro_path = dir.path().join("mymacros.fnl");
-        fs::write(&macro_path, macro_code).unwrap();
-        let macro_uri = Url::from_file_path(&macro_path).unwrap();
+        fs::write(&macro_path, macro_code).expect("should write file");
+        let macro_uri = Url::from_file_path(&macro_path).expect("path should be a valid file URL");
         backend.doc_map.insert(macro_uri.clone(), Rope::from_str(macro_code));
 
         let main_path = dir.path().join("main.fnl");
-        fs::write(&main_path, main_code).unwrap();
-        let main_uri = Url::from_file_path(&main_path).unwrap();
+        fs::write(&main_path, main_code).expect("should write file");
+        let main_uri = Url::from_file_path(&main_path).expect("path should be a valid file URL");
 
         backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
         let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
@@ -1230,7 +1321,8 @@ mod tests {
             partial_result_params: PartialResultParams::default(),
         };
 
-        let response = backend.goto_definition(params).await.unwrap();
+        let response =
+            backend.goto_definition(params).await.expect("goto_definition should not error");
         println!("\n--- Goto Definition Import Macros ---");
         if let Some(GotoDefinitionResponse::Array(locations)) = response {
             for loc in locations {
@@ -1275,11 +1367,11 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
-        let uri = Url::parse("file:///test.fnl").unwrap();
+        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
         backend.doc_map.insert(uri.clone(), Rope::from_str(code));
         let ast = fennel_parser::parse(code.chars(), HashSet::new());
         backend.ast_map.insert(uri.clone(), ast);
@@ -1302,10 +1394,10 @@ mod tests {
             response
         );
 
-        let locations = response.unwrap();
+        let locations = response.expect("references should not error");
         assert!(locations.is_some(), "should find references when cursor is on the definition");
 
-        let locations = locations.unwrap();
+        let locations = locations.expect("should find references");
         println!("\n--- References from Definition ---");
         for loc in &locations {
             println!(
@@ -1348,11 +1440,11 @@ mod tests {
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(config::Configuration::default())),
             std_ast,
-            std_uri: Url::parse(STUBS_URI).unwrap(),
+            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
         });
         let backend = service.inner();
 
-        let uri = Url::parse("file:///test.fnl").unwrap();
+        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
         backend.doc_map.insert(uri.clone(), Rope::from_str(code));
         let ast = fennel_parser::parse(code.chars(), HashSet::new());
         backend.ast_map.insert(uri.clone(), ast);
@@ -1374,9 +1466,9 @@ mod tests {
         let response = backend.references(params).await;
         assert!(response.is_ok(), "references from usage should not error, got: {:?}", response,);
 
-        let locations = response.unwrap();
+        let locations = response.expect("references should not error");
         assert!(locations.is_some(), "should find references when cursor is on usage");
-        let locations = locations.unwrap();
+        let locations = locations.expect("should find references");
         assert!(
             locations.len() >= 2,
             "expected at least 2 references (def + usage), got {}",

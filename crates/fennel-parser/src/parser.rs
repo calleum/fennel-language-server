@@ -46,7 +46,7 @@ impl<'p> Parser<'p> {
     }
 
     fn lex_next(&mut self) -> Token {
-        let span = self.lexer.next().unwrap();
+        let span = self.lexer.next().expect("lexer always returns a token");
         Token { kind: span.kind, text: span.text, range: span.range }
     }
 
@@ -59,7 +59,7 @@ impl<'p> Parser<'p> {
     }
 
     fn lookahead(&self) -> &Token {
-        self.token_queue.front().unwrap()
+        self.token_queue.front().expect("token queue is initialized with at least one token")
     }
 
     fn peek(&mut self) -> Token {
@@ -86,7 +86,7 @@ impl<'p> Parser<'p> {
     }
 
     fn cur_rule(&self) -> &Rule {
-        self.rule_stack.last().unwrap()
+        self.rule_stack.last().expect("rule stack is never empty during parsing")
     }
 
     fn skip(&mut self) {
@@ -724,14 +724,14 @@ impl<'p> Parser<'p> {
     }
 
     fn expand(&mut self, cur_token: Token, rules: impl DoubleEndedIterator<Item = Rule>) {
-        let cur_rule = self.rule_stack.pop().unwrap();
+        let cur_rule = self.rule_stack.pop().expect("expand called with non-empty rule stack");
         if let Some(r) = cur_rule.expand() {
             self.rule_stack.push(r)
         }
         self.builder.start_node(cur_rule.expect.into());
 
         let mut rules = rules.peekable();
-        let first_rule = rules.peek().unwrap();
+        let first_rule = rules.peek().expect("rules iterator is non-empty");
         let range = if L_DELIMITERS.contains(&first_rule.expect) {
             Some(text_range(&cur_token.range))
         } else {
@@ -758,7 +758,8 @@ impl<'p> Parser<'p> {
             || cur_token.kind == SyntaxKind::KEYWORD_UNTIL)
             && cur_token.text.starts_with(':')
         {
-            self.token_queue.get_mut(0).unwrap().kind = SyntaxKind::COLON_STRING;
+            self.token_queue.get_mut(0).expect("token queue is non-empty").kind =
+                SyntaxKind::COLON_STRING;
             // Check it again.
             return;
         }
@@ -823,7 +824,7 @@ impl<'p> Parser<'p> {
         };
 
         let mut split = symbol.split('.').peekable();
-        let symbol_alone = split.next().unwrap();
+        let symbol_alone = split.next().expect("symbol split always yields at least one part");
         self.builder.token(SYMBOL.into(), symbol_alone);
 
         let mut length = symbol_alone.len();
@@ -833,7 +834,8 @@ impl<'p> Parser<'p> {
             self.builder.token(SYMBOL_FIELD.into(), field);
         }
         if split.peek().is_some() {
-            self.builder.token(ERROR.into(), &cur_text[length..]);
+            self.builder
+                .token(ERROR.into(), cur_text.get(length..).expect("length <= cur_text.len()"));
             self.errors.push(Error::new(
                 text_range_with_offset(&cur_token.range, (length as i32, 0)),
                 InvalidSymbol,
@@ -842,9 +844,11 @@ impl<'p> Parser<'p> {
         }
 
         if let Some(str) = method {
-            if str.is_empty() || str[1..].contains(':') || str.contains('.') {
+            if str.is_empty() || str.get(1..).is_some_and(|s| s.contains(':')) || str.contains('.')
+            {
                 let offset = symbol.len();
-                self.builder.token(ERROR.into(), &cur_text[offset..]);
+                self.builder
+                    .token(ERROR.into(), cur_text.get(offset..).expect("offset <= cur_text.len()"));
                 self.errors.push(Error::new(
                     text_range_with_offset(&cur_token.range, (offset as i32, 0)),
                     InvalidSymbol,

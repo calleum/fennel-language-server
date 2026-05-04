@@ -1,8 +1,11 @@
 use crate::SyntaxKind::{self, *};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(non_camel_case_types)]
-#[allow(clippy::upper_case_acronyms)]
+#[expect(non_camel_case_types, reason = "token set names mirror SyntaxKind naming convention")]
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "token set names mirror SyntaxKind naming convention"
+)]
 pub(crate) enum TokenSet {
     END,
     R_PAREN,

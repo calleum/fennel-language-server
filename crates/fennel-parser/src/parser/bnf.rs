@@ -11,7 +11,7 @@ pub(crate) struct Rule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Notation {
     Once,
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "kept for future BNF extensions")]
     OncePeek(TokenSet),
     Repeat(TokenSet),
     Repeat1(TokenSet),

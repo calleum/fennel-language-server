@@ -90,6 +90,6 @@ impl<'de> Deserialize<'de> for Url {
             .or_else(|_| tower_lsp::lsp_types::Url::from_file_path(PathBuf::from(&s)))
             .or_else(|_| tower_lsp::lsp_types::Url::parse(&s))
             .map(Self)
-            .map_err(|_| D::Error::custom(format!("invalid path or url: {}", s)))
+            .map_err(|_e| D::Error::custom(format!("invalid path or url: {}", s)))
     }
 }

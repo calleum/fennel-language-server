@@ -381,7 +381,7 @@ impl Binding for FuncAst {
             }
             Some(models::LSymbol {
                 token: models::Token {
-                    text: name_node.first_token().unwrap().to_string(),
+                    text: name_node.first_token().expect("name node has a token").to_string(),
                     range: name_node.text_range(),
                 },
                 scope: models::Scope {
@@ -539,12 +539,17 @@ impl Match {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
-                    .and_then(|n| n.id());
+                let token = Symbol::cast(
+                    node.first_token()
+                        .expect("symbol has first token")
+                        .parent()
+                        .expect("token has parent"),
+                )
+                .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
-                let token = token.unwrap().0;
+                let token = token.expect("checked is_none above").0;
                 if l_symbols.nearest(&token.clone()).is_none() {
                     let scope_range = ScopeExtend::This(p.clone()).range(node);
                     l_symbols.0.insert(
@@ -584,12 +589,17 @@ impl Catch {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
-                    .and_then(|n| n.id());
+                let token = Symbol::cast(
+                    node.first_token()
+                        .expect("symbol has first token")
+                        .parent()
+                        .expect("token has parent"),
+                )
+                .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
-                let token = token.unwrap().0;
+                let token = token.expect("checked is_none above").0;
                 if l_symbols.nearest(&token.clone()).is_none() {
                     let scope_range = ScopeExtend::This(p.clone()).range(node);
                     l_symbols.0.insert(
@@ -633,12 +643,17 @@ impl MatchTry {
         {
             for n in ns {
                 let node = n.syntax();
-                let token = Symbol::cast(node.first_token().unwrap().parent().unwrap())
-                    .and_then(|n| n.id());
+                let token = Symbol::cast(
+                    node.first_token()
+                        .expect("symbol has first token")
+                        .parent()
+                        .expect("token has parent"),
+                )
+                .and_then(|n| n.id());
                 if token.is_none() {
                     continue;
                 }
-                let token = token.unwrap().0;
+                let token = token.expect("checked is_none above").0;
                 if l_symbols.nearest(&token.clone()).is_none() {
                     let scope_range = ScopeExtend::Current.range(node);
                     l_symbols.0.insert(
@@ -698,7 +713,8 @@ impl MatchTry {
         let clause =
             self.syntax().children().filter(|n| n.kind() == SyntaxKind::N_MATCH_TRY_CLAUSE);
         if let Some(last_clause) = clause.last()
-            && last_clause.first_child().unwrap().kind() == SyntaxKind::N_CATCH_LIST
+            && last_clause.first_child().expect("clause has first child").kind()
+                == SyntaxKind::N_CATCH_LIST
         {
             return last_clause.text_range().start();
         }
@@ -709,18 +725,30 @@ impl MatchTry {
 impl models::ScopeExtend {
     fn range(&self, node: &SyntaxNode) -> TextRange {
         let scope_end = match self {
-            Self::Current => node.ancestors().find_map(ScopeAst::cast).unwrap().end(),
+            Self::Current => {
+                node.ancestors().find_map(ScopeAst::cast).expect("node has scope ancestor").end()
+            }
             Self::This(node) => node.text_range().end(),
             Self::Outer => {
                 let mut scopes = node.ancestors().filter_map(ScopeAst::cast);
-                let first_scope = scopes.next().unwrap(); // safe
+                let first_scope = scopes.next().expect("node has at least one scope ancestor");
                 if let ScopeAst::Root(n) = first_scope {
                     n.syntax().text_range().end()
                 } else {
-                    scopes.next().unwrap().syntax().text_range().end()
+                    scopes
+                        .next()
+                        .expect("node has outer scope ancestor")
+                        .syntax()
+                        .text_range()
+                        .end()
                 }
             }
-            Self::File => node.ancestors().last().and_then(ScopeAst::cast).unwrap().end(),
+            Self::File => node
+                .ancestors()
+                .last()
+                .and_then(ScopeAst::cast)
+                .expect("node has file scope ancestor")
+                .end(),
         };
         let start = node.text_range().end();
         TextRange::new(start, scope_end)

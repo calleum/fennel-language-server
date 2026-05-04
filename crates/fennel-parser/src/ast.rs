@@ -42,7 +42,8 @@ impl Ast {
         parser_errors: Vec<Error>,
         user_globals: HashSet<String>,
     ) -> Self {
-        let root = Root::cast(SyntaxNode::new_root(green_node.clone())).unwrap();
+        let root = Root::cast(SyntaxNode::new_root(green_node.clone()))
+            .expect("root node must cast to Root");
 
         let mut ast = Ast {
             root: green_node,
@@ -228,7 +229,7 @@ impl Ast {
         if token.is_none() {
             return (Box::new(vec![].into_iter()), vec![], None, String::new());
         }
-        let token = token.unwrap();
+        let token = token.expect("token was just checked to be Some");
         if trigger.is_some() {
             let symbol_token = token.prev_token().and_then(|t| t.parent()).and_then(|n| {
                 nodes::ReferSymbol::cast(n.clone())
@@ -255,8 +256,9 @@ impl Ast {
                     if let Some(range) = lsym.value.range {
                         let root = SyntaxNode::new_root(self.root.clone());
                         if let Some(token) = root.token_at_offset(range.start()).right_biased()
-                            && let Some(kv_table) =
-                                nodes::get_ancestor::<nodes::KvTable>(&token.parent().unwrap())
+                            && let Some(kv_table) = nodes::get_ancestor::<nodes::KvTable>(
+                                &token.parent().expect("token has parent node"),
+                            )
                         {
                             for k in kv_table.cast_hashmap().keys() {
                                 res.push(k.clone());
@@ -298,14 +300,14 @@ impl Ast {
             }
 
             let mut prevs = token.siblings_with_tokens(rowan::Direction::Prev).peekable();
-            if prevs.peek().unwrap().kind() == SyntaxKind::R_PAREN {
+            if prevs.peek().expect("siblings iterator is non-empty").kind() == SyntaxKind::R_PAREN {
                 prevs.next();
             }
-            let peek = prevs.peek().unwrap();
+            let peek = prevs.peek().expect("siblings iterator is non-empty");
             if peek.kind() == SyntaxKind::N_SUBLIST
                 && peek
                     .as_node()
-                    .unwrap()
+                    .expect("N_SUBLIST is a node kind")
                     .first_child()
                     .map(|n| n.children().count() == 1)
                     .unwrap_or(false)
@@ -412,9 +414,8 @@ impl Ast {
         lexer::validate(s, SyntaxKind::COLON_STRING)
     }
 
-    #[allow(unused)]
     pub fn return_kv_keys(&self) -> Option<Vec<String>> {
-        let root = Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
+        let root = Root::cast(SyntaxNode::new_root(self.root.clone()))?;
         root.return_kv_table().map(|m| m.into_keys().collect())
     }
 
@@ -426,9 +427,11 @@ impl Ast {
                 .filter_map(|n| n.bindings())
                 .flatten(),
         );
-        let mut r_symbols = nodes::Root::cast(root.clone()).unwrap().r_symbols();
+        let mut r_symbols =
+            nodes::Root::cast(root.clone()).expect("root must cast to Root").r_symbols();
 
-        let new_r_symbols = Root::cast(root).unwrap().correct_symbols(&mut l_symbols);
+        let new_r_symbols =
+            Root::cast(root).expect("root must cast to Root").correct_symbols(&mut l_symbols);
         r_symbols.extend(new_r_symbols);
         self.l_symbols = l_symbols;
         self.r_symbols = r_symbols;
@@ -451,13 +454,16 @@ impl Ast {
             .collect();
 
         follows.iter().for_each(|(key, r_symbol_range)| {
-            let token = root.token_at_offset(r_symbol_range.start()).right_biased().unwrap();
+            let token = root
+                .token_at_offset(r_symbol_range.start())
+                .right_biased()
+                .expect("offset has a token");
             let text = token.text().to_owned();
             let ref_l_symbol = self
                 .l_symbols
                 .nearest(&models::Token { text: text.clone(), range: *r_symbol_range })
                 .cloned();
-            let v = self.l_symbols.0.get_mut(key).unwrap();
+            let v = self.l_symbols.0.get_mut(key).expect("key exists in l_symbols");
             if let Some(l_symbol) = ref_l_symbol {
                 v.value = l_symbol.value;
             } else if self.globals.contains(&text) {
@@ -467,7 +473,8 @@ impl Ast {
     }
 
     fn update_resources(&mut self) {
-        let root = Root::cast(SyntaxNode::new_root(self.root.clone())).unwrap();
+        let root =
+            Root::cast(SyntaxNode::new_root(self.root.clone())).expect("root must cast to Root");
         self.resources = root.resources().collect()
     }
 
