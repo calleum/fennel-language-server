@@ -866,7 +866,7 @@ impl<'p> Parser<'p> {
             .rposition(|x| {
                 if let Rule { expect: kind, notation: Close(_) } = x {
                     total += 1;
-                    kinds.contains(kind)
+                    kinds.iter().any(|a| a == kind)
                 } else {
                     false
                 }

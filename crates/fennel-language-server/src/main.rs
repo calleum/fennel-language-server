@@ -3,6 +3,11 @@ mod config;
 mod helper;
 mod view;
 
+#[cfg(test)]
+mod tdd_helper;
+#[cfg(test)]
+mod tdd_tests;
+
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -29,7 +34,7 @@ use crate::view::{document_symbols_view, value_kind_to_symbol_kind};
 
 const STUBS_URI: &str = "fennel://stubs/lua54.fnl";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Backend {
     client: tower_lsp::Client,
     config: Arc<RwLock<config::Configuration>>,
@@ -50,12 +55,6 @@ impl tower_lsp::LanguageServer for Backend {
             folders.into_iter().for_each(|folder| {
                 self.workspace_map.insert(folder.uri, folder.name);
             });
-            for fol in self.workspace_map.iter() {
-                let files = collect_fnl_filepaths(fol.key().clone())?;
-                for f in &files {
-                    self.get_or_parse_ast(f).await;
-                }
-            }
         }
 
         if let Some(settings) = params.initialization_options
@@ -571,6 +570,13 @@ impl tower_lsp::LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
+        for fol in self.workspace_map.iter() {
+            if let Ok(files) = collect_fnl_filepaths(fol.key().clone()) {
+                for f in &files {
+                    self.get_or_parse_ast(f).await;
+                }
+            }
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -998,8 +1004,10 @@ fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
     for entry in WalkDir::new(root.to_file_path().map_err(|_path| Error::internal_error())?)
         .follow_links(true)
         .into_iter()
+        .filter_entry(|e| e.file_name().to_str().map(|s| s.ends_with("fnl")).unwrap_or(false))
         .filter_map(|e| e.ok())
     {
+        eprintln!("Path!!!!!! {:?}", entry.path());
         let f_url = Url::from_file_path(entry.path()).map_err(|_url| Error::internal_error())?;
         paths.push(f_url);
     }
