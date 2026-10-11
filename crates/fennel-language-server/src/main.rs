@@ -709,7 +709,23 @@ impl tower_lsp::LanguageServer for Backend {
         let (symbol, field_text) = match ast.definition(offset) {
             Some(fennel_parser::Definition::Symbol(symbol, _)) => (symbol, None),
             Some(fennel_parser::Definition::SymbolField(symbol, field)) => (symbol, Some(field)),
-            _ => return Ok(None),
+            _ => {
+                let root = SyntaxNode::new_root(ast.root.clone());
+                if let Some(token) = root.token_at_offset(TextSize::from(offset)).right_biased()
+                    && let Some(lua_node) =
+                        token.parent_ancestors().find_map(fennel_parser::ast::nodes::Lua::cast)
+                    && let Some(code) = lua_node.code()
+                {
+                    let range = lsp_range(&doc, lua_node.syntax().text_range())?;
+                    let contents =
+                        HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+                            language: "lua".into(),
+                            value: code,
+                        }));
+                    return Ok(Some(Hover { contents, range: Some(range) }));
+                }
+                return Ok(None);
+            }
         };
         let range = lsp_range(&doc, symbol.token.range)?;
         let text = field_text.unwrap_or(symbol.token.text);

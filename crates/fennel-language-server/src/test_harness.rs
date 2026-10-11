@@ -281,6 +281,17 @@ impl TestHarness {
         };
         self.backend.document_link(params).await
     }
+
+    pub async fn hover(&self, uri: &Url, line: u32, character: u32) -> Result<Option<Hover>> {
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.hover(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {

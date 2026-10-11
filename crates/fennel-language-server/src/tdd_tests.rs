@@ -628,4 +628,21 @@ mod tests {
         let folds = harness.folding_range(&uri).await.unwrap().unwrap();
         assert!(folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
     }
+
+    #[tokio::test]
+    async fn test_lua_hover() {
+        let code = "(lua \"print('hello')\")";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_lua.fnl", code);
+
+        let hover = harness.hover(&uri, 0, 8).await.unwrap();
+        assert!(hover.is_some());
+        let hover = hover.unwrap();
+        if let HoverContents::Scalar(MarkedString::LanguageString(ls)) = hover.contents {
+            assert_eq!(ls.language, "lua");
+            assert_eq!(ls.value, "print('hello')");
+        } else {
+            panic!("Expected LanguageString in hover");
+        }
+    }
 }

@@ -450,6 +450,28 @@ impl While {
     }
 }
 
+impl Lua {
+    pub fn string_token(&self) -> Option<SyntaxToken> {
+        self.syntax()
+            .children()
+            .find(|n| n.kind() == SyntaxKind::N_STRING_LITERAL)
+            .and_then(|n| n.first_token())
+    }
+
+    pub fn code(&self) -> Option<String> {
+        let token = self.string_token()?;
+        let text = token.text();
+        match token.kind() {
+            SyntaxKind::COLON_STRING => text.strip_prefix(':').map(ToString::to_string),
+            SyntaxKind::QUOTE_STRING => {
+                let stripped = text.strip_prefix('"')?.strip_suffix('"')?;
+                Some(stripped.to_string())
+            }
+            _ => None,
+        }
+    }
+}
+
 impl TryFrom<SyntaxToken> for Literal {
     type Error = ();
 
