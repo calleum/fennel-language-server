@@ -108,6 +108,7 @@ impl tower_lsp::LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -697,6 +698,76 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         Ok(Some(links))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let root = SyntaxNode::new_root(ast.root.clone());
+
+        let requested_range = params.range;
+        let mut hints = Vec::new();
+
+        for node in root.descendants() {
+            if node.kind() == SyntaxKind::N_SYMBOL_CALL {
+                let Some(callee_token) = node.first_token() else {
+                    continue;
+                };
+                let callee_name = callee_token.text().to_string();
+                let callee_offset = u32::from(callee_token.text_range().start());
+
+                let Some((_label, params_list, _doc)) =
+                    self.extract_func_signature(&callee_name, callee_offset, &ast)
+                else {
+                    continue;
+                };
+
+                let Some(args_node) = node.children().find(|n| n.kind() == SyntaxKind::N_ARGS)
+                else {
+                    continue;
+                };
+
+                let arg_nodes: Vec<_> =
+                    args_node.children().filter(|n| n.kind() == SyntaxKind::N_SEXP).collect();
+
+                for (i, arg) in arg_nodes.iter().enumerate() {
+                    let Some(param_name) = params_list.get(i) else {
+                        break;
+                    };
+                    if param_name == "&" || param_name == "..." || param_name.starts_with('&') {
+                        break;
+                    }
+
+                    let arg_text = arg.text().to_string().trim().to_string();
+                    if &arg_text == param_name {
+                        continue;
+                    }
+
+                    let Ok(pos) = byte_offset_to_position(&doc, arg.text_range().start().into())
+                    else {
+                        continue;
+                    };
+
+                    if pos < requested_range.start || pos > requested_range.end {
+                        continue;
+                    }
+
+                    hints.push(InlayHint {
+                        position: pos,
+                        label: InlayHintLabel::String(format!("{param_name}:")),
+                        kind: Some(InlayHintKind::PARAMETER),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: None,
+                        padding_right: Some(true),
+                        data: None,
+                    });
+                }
+            }
+        }
+
+        Ok(Some(hints))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

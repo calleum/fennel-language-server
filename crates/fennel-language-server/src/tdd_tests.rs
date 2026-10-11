@@ -645,4 +645,39 @@ mod tests {
             panic!("Expected LanguageString in hover");
         }
     }
+
+    #[tokio::test]
+    async fn test_inlay_hints() {
+        let code = "(fn add [first second] (+ first second))\n(add 10 20)\n(add first 30)\n";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_inlay.fnl", code);
+
+        let hints = harness
+            .inlay_hint(&uri, Range::new(Position::new(0, 0), Position::new(3, 0)))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(hints.len(), 3);
+        let h0 = hints.first().expect("hint 0");
+        match &h0.label {
+            InlayHintLabel::String(s) => assert_eq!(s, "first:"),
+            _ => panic!("Expected String label"),
+        }
+        assert_eq!(h0.position, Position::new(1, 5));
+
+        let h1 = hints.get(1).expect("hint 1");
+        match &h1.label {
+            InlayHintLabel::String(s) => assert_eq!(s, "second:"),
+            _ => panic!("Expected String label"),
+        }
+        assert_eq!(h1.position, Position::new(1, 8));
+
+        let h2 = hints.get(2).expect("hint 2");
+        match &h2.label {
+            InlayHintLabel::String(s) => assert_eq!(s, "second:"),
+            _ => panic!("Expected String label"),
+        }
+        assert_eq!(h2.position, Position::new(2, 11));
+    }
 }

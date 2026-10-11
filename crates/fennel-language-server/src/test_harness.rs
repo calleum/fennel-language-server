@@ -292,6 +292,15 @@ impl TestHarness {
         };
         self.backend.hover(params).await
     }
+
+    pub async fn inlay_hint(&self, uri: &Url, range: Range) -> Result<Option<Vec<InlayHint>>> {
+        let params = InlayHintParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+            range,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.inlay_hint(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {
