@@ -51,7 +51,6 @@ struct Backend {
 impl tower_lsp::LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         if let Some(folders) = params.workspace_folders {
-            eprintln!("{folders:?}");
             folders.into_iter().for_each(|folder| {
                 self.workspace_map.insert(folder.uri, folder.name);
             });
@@ -334,11 +333,6 @@ impl tower_lsp::LanguageServer for Backend {
         drop(doc);
 
         let fields: Vec<&str> = symbol_name.split('.').collect();
-        eprintln!(
-            ">>> references: looking for '{}' across {} files",
-            symbol_name,
-            self.ast_map.len()
-        );
 
         // Search other files for the same symbol
         let mut cross_file_refs: HashMap<Url, Vec<models::RSymbol>> = HashMap::new();
@@ -370,7 +364,6 @@ impl tower_lsp::LanguageServer for Backend {
             let range = lsp_range(&doc, reference)?;
             locations.push(Location::new(uri.clone(), range));
         }
-        eprintln!(">>> references: returning {} locations", locations.len());
         Ok(Some(locations))
     }
 
@@ -1390,7 +1383,6 @@ fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
         .filter_entry(|e| e.file_name().to_str().map(|s| s.ends_with("fnl")).unwrap_or(false))
         .filter_map(|e| e.ok())
     {
-        eprintln!("Path!!!!!! {:?}", entry.path());
         let f_url = Url::from_file_path(entry.path()).map_err(|_url| Error::internal_error())?;
         paths.push(f_url);
     }
