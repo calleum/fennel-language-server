@@ -301,6 +301,35 @@ impl TestHarness {
         };
         self.backend.inlay_hint(params).await
     }
+
+    pub async fn code_action(
+        &self,
+        uri: &Url,
+        range: Range,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Option<CodeActionResponse>> {
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+            range,
+            context: CodeActionContext { diagnostics, only: None, trigger_kind: None },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.backend.code_action(params).await
+    }
+
+    pub async fn execute_command(
+        &self,
+        command: &str,
+        arguments: Vec<serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>> {
+        let params = ExecuteCommandParams {
+            command: command.to_string(),
+            arguments,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.execute_command(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {

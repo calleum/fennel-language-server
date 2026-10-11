@@ -680,4 +680,65 @@ mod tests {
         }
         assert_eq!(h2.position, Position::new(2, 11));
     }
+
+    #[tokio::test]
+    async fn test_code_action_prefix_unused() {
+        let code = "(fn foo [unused-param used-param]\n  used-param)\n";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_action_unused.fnl", code);
+
+        let actions = harness
+            .code_action(&uri, Range::new(Position::new(0, 9), Position::new(0, 21)), vec![])
+            .await
+            .unwrap()
+            .unwrap();
+
+        let prefix_action = actions.iter().find_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca) if ca.title == "Prefix with _" => Some(ca),
+            _ => None,
+        });
+
+        assert!(prefix_action.is_some(), "Expected 'Prefix with _' code action");
+        let ca = prefix_action.unwrap();
+        assert_eq!(ca.kind, Some(CodeActionKind::QUICKFIX));
+
+        let edit = ca.edit.as_ref().expect("expected workspace edit");
+        let text_edits = edit.changes.as_ref().unwrap().get(&uri).unwrap();
+        assert_eq!(text_edits.len(), 1);
+        let first_edit = text_edits.first().unwrap();
+        assert_eq!(first_edit.new_text, "_unused-param");
+    }
+
+    #[tokio::test]
+    async fn test_code_action_add_global() {
+        let code = "(print unknown_global_var)\n";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_action_global.fnl", code);
+
+        let actions = harness
+            .code_action(&uri, Range::new(Position::new(0, 7), Position::new(0, 25)), vec![])
+            .await
+            .unwrap()
+            .unwrap();
+
+        let global_action = actions.iter().find_map(|a| match a {
+            CodeActionOrCommand::CodeAction(ca) if ca.title == "Add to globals configuration" => {
+                Some(ca)
+            }
+            _ => None,
+        });
+
+        assert!(global_action.is_some(), "Expected 'Add to globals configuration' code action");
+        let ca = global_action.unwrap();
+        assert_eq!(ca.kind, Some(CodeActionKind::QUICKFIX));
+
+        let cmd = ca.command.as_ref().expect("expected command");
+        assert_eq!(cmd.command, "fennel.addGlobal");
+        let arg = cmd.arguments.as_ref().unwrap().first().unwrap();
+        assert_eq!(arg.as_str().unwrap(), "unknown_global_var");
+
+        let res =
+            harness.execute_command(&cmd.command, cmd.arguments.clone().unwrap()).await.unwrap();
+        assert_eq!(res, Some(serde_json::Value::Bool(true)));
+    }
 }

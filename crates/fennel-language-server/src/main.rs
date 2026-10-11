@@ -109,6 +109,10 @@ impl tower_lsp::LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["fennel.addGlobal".into()],
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -942,10 +946,15 @@ impl tower_lsp::LanguageServer for Backend {
         let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
         let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
         let offset = position_to_byte_offset(&doc, params.range.start)?;
+        let end_offset = position_to_byte_offset(&doc, params.range.end).unwrap_or(offset);
+
+        let mut res: Vec<CodeActionOrCommand> = Vec::new();
 
         let actions = ast.hint_action(offset);
-        let res = actions.iter().filter_map(|(range, action)| {
-            let range = lsp_range(&doc, *range).ok()?;
+        for (range, action) in actions {
+            let Some(range) = lsp_range(&doc, range).ok() else {
+                continue;
+            };
             let action = match action {
                 fennel_parser::Action::ConvertToColonString(s) => {
                     let mut map = HashMap::new();
@@ -968,9 +977,188 @@ impl tower_lsp::LanguageServer for Backend {
                     })
                 }
             };
-            Some(action)
-        });
-        Ok(Some(res.collect()))
+            res.push(action);
+        }
+
+        let mut seen = HashSet::new();
+        let errors: Vec<fennel_parser::Error> = {
+            let mut errs: Vec<fennel_parser::Error> = ast.errors().cloned().collect();
+            if let Some(on_save) = self.on_save_or_open_errors.get(&uri) {
+                errs.extend(on_save.iter().cloned());
+            } else {
+                errs.extend(ast.on_save_errors().cloned());
+            }
+            errs
+        };
+
+        for error in errors {
+            let Ok(err_lsp_range) = lsp_range(&doc, error.range) else {
+                continue;
+            };
+
+            let in_range = u32::from(error.range.start()) <= end_offset
+                && offset <= u32::from(error.range.end());
+            let diag_match =
+                params.context.diagnostics.iter().any(|d| {
+                    !(d.range.end < err_lsp_range.start || d.range.start > err_lsp_range.end)
+                });
+
+            if !in_range && !diag_match {
+                continue;
+            }
+
+            match &error.kind {
+                fennel_parser::ErrorKind::Unused => {
+                    let Ok(start_char) = doc.try_byte_to_char(usize::from(error.range.start()))
+                    else {
+                        continue;
+                    };
+                    let Ok(end_char) = doc.try_byte_to_char(usize::from(error.range.end())) else {
+                        continue;
+                    };
+                    let var_name = doc.slice(start_char..end_char).to_string();
+                    if !var_name.starts_with('_')
+                        && !var_name.is_empty()
+                        && seen.insert((error.range, "unused".to_string()))
+                    {
+                        let mut map = HashMap::new();
+                        map.insert(
+                            uri.clone(),
+                            vec![TextEdit::new(err_lsp_range, format!("_{var_name}"))],
+                        );
+
+                        let matching_diags: Vec<Diagnostic> = params
+                            .context
+                            .diagnostics
+                            .iter()
+                            .filter(|d| {
+                                !(d.range.end < err_lsp_range.start
+                                    || d.range.start > err_lsp_range.end)
+                            })
+                            .cloned()
+                            .collect();
+
+                        res.push(CodeActionOrCommand::CodeAction(CodeAction {
+                            title: "Prefix with _".to_string(),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            diagnostics: if matching_diags.is_empty() {
+                                let (msg, sev) = view::error(error.kind.clone());
+                                Some(vec![Diagnostic::new(
+                                    err_lsp_range,
+                                    Some(sev),
+                                    None,
+                                    Some("Fennel Diagnostics".into()),
+                                    msg,
+                                    None,
+                                    None,
+                                )])
+                            } else {
+                                Some(matching_diags)
+                            },
+                            is_preferred: Some(true),
+                            edit: Some(WorkspaceEdit::new(map)),
+                            ..Default::default()
+                        }));
+                    }
+                }
+                fennel_parser::ErrorKind::Undefined(iden) => {
+                    let base_symbol = iden.split('.').next().unwrap_or(iden);
+                    if !base_symbol.is_empty()
+                        && seen.insert((error.range, format!("undef:{base_symbol}")))
+                    {
+                        let matching_diags: Vec<Diagnostic> = params
+                            .context
+                            .diagnostics
+                            .iter()
+                            .filter(|d| {
+                                !(d.range.end < err_lsp_range.start
+                                    || d.range.start > err_lsp_range.end)
+                            })
+                            .cloned()
+                            .collect();
+
+                        res.push(CodeActionOrCommand::CodeAction(CodeAction {
+                            title: "Add to globals configuration".to_string(),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            diagnostics: if matching_diags.is_empty() {
+                                let (msg, sev) = view::error(error.kind.clone());
+                                Some(vec![Diagnostic::new(
+                                    err_lsp_range,
+                                    Some(sev),
+                                    None,
+                                    Some("Fennel Diagnostics".into()),
+                                    msg,
+                                    None,
+                                    None,
+                                )])
+                            } else {
+                                Some(matching_diags)
+                            },
+                            is_preferred: Some(true),
+                            command: Some(Command {
+                                title: "Add to globals configuration".to_string(),
+                                command: "fennel.addGlobal".to_string(),
+                                arguments: Some(vec![serde_json::Value::String(
+                                    base_symbol.to_string(),
+                                )]),
+                            }),
+                            ..Default::default()
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(only) = &params.context.only {
+            res.retain(|action_or_cmd| {
+                if let CodeActionOrCommand::CodeAction(ca) = action_or_cmd {
+                    if let Some(kind) = &ca.kind {
+                        only.iter().any(|allowed| kind.as_str().starts_with(allowed.as_str()))
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }
+            });
+        }
+
+        Ok(Some(res))
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        if params.command == "fennel.addGlobal" || params.command == "addGlobal" {
+            let Some(arg) = params.arguments.first() else {
+                return Ok(None);
+            };
+            let Some(global_name) = arg.as_str() else {
+                return Ok(None);
+            };
+
+            {
+                let mut config = self.config.write().expect("config lock should not be poisoned");
+                if !config.fennel.diagnostics.globals.iter().any(|g| g == global_name) {
+                    config.fennel.diagnostics.globals.push(global_name.to_string());
+                }
+            }
+
+            let globals = self.collect_globals();
+            for mut r in self.ast_map.iter_mut() {
+                let ast = r.value_mut();
+                ast.update_globals(globals.iter().cloned().collect());
+                let uri = r.key();
+                if let Some(doc) = self.doc_map.get(uri) {
+                    self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
+                }
+            }
+
+            return Ok(Some(serde_json::Value::Bool(true)));
+        }
+        Ok(None)
     }
 
     async fn selection_range(
