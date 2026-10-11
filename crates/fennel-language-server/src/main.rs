@@ -93,6 +93,11 @@ impl tower_lsp::LanguageServer for Backend {
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), " ".into()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 ..Default::default()
             },
         })
@@ -752,6 +757,100 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(highlights))
     }
 
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let offset = position_to_byte_offset(&doc, position)?;
+        let root = SyntaxNode::new_root(ast.root.clone());
+
+        let text_size = rowan::TextSize::from(offset);
+        let token = match root.token_at_offset(text_size) {
+            rowan::TokenAtOffset::Single(t) => Some(t),
+            rowan::TokenAtOffset::Between(l, r) => {
+                if r.kind() == SyntaxKind::R_PAREN {
+                    Some(l)
+                } else if r.kind() != SyntaxKind::WHITESPACE {
+                    Some(r)
+                } else {
+                    Some(l)
+                }
+            }
+            rowan::TokenAtOffset::None => None,
+        };
+
+        let Some(token) = token else {
+            return Ok(None);
+        };
+
+        let Some(call_node) = token
+            .parent_ancestors()
+            .find(|n| matches!(n.kind(), SyntaxKind::N_SYMBOL_CALL | SyntaxKind::N_LIST))
+        else {
+            return Ok(None);
+        };
+
+        let symbol_call_opt = if call_node.kind() == SyntaxKind::N_SYMBOL_CALL {
+            Some(call_node)
+        } else {
+            call_node.descendants().find(|n| n.kind() == SyntaxKind::N_SYMBOL_CALL)
+        };
+        let Some(symbol_call) = symbol_call_opt else {
+            return Ok(None);
+        };
+
+        let Some(callee_token) = symbol_call.first_token() else {
+            return Ok(None);
+        };
+        let callee_name = callee_token.text().to_string();
+        let callee_offset = u32::from(callee_token.text_range().start());
+
+        let Some((label, params, docstring)) =
+            self.extract_func_signature(&callee_name, callee_offset, &ast)
+        else {
+            return Ok(None);
+        };
+
+        let mut active_param_idx = 0;
+        if let Some(args_node) = symbol_call.children().find(|n| n.kind() == SyntaxKind::N_ARGS) {
+            let arg_nodes: Vec<_> =
+                args_node.children().filter(|n| n.kind() == SyntaxKind::N_SEXP).collect();
+            let mut found = false;
+            for (i, arg) in arg_nodes.iter().enumerate() {
+                if offset <= u32::from(arg.text_range().end()) {
+                    active_param_idx = i as u32;
+                    found = true;
+                    break;
+                }
+            }
+            if !found && !arg_nodes.is_empty() {
+                active_param_idx = arg_nodes.len() as u32;
+            }
+        }
+
+        let sig_info = SignatureInformation {
+            label,
+            documentation: docstring.map(Documentation::String),
+            parameters: Some(
+                params
+                    .iter()
+                    .map(|p| ParameterInformation {
+                        label: ParameterLabel::Simple(p.clone()),
+                        documentation: None,
+                    })
+                    .collect(),
+            ),
+            active_parameter: Some(active_param_idx),
+        };
+
+        Ok(Some(SignatureHelp {
+            signatures: vec![sig_info],
+            active_signature: Some(0),
+            active_parameter: Some(active_param_idx),
+        }))
+    }
+
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
         for fol in self.workspace_map.iter() {
@@ -1132,6 +1231,60 @@ impl Backend {
                 .or_else(|| check_exist(rel, "fnl", false))
                 .or_else(|| check_exist(rel, "fnl", true))
         })
+    }
+
+    fn extract_func_signature(
+        &self,
+        callee_name: &str,
+        callee_offset: u32,
+        ast: &Ast,
+    ) -> Option<(String, Vec<String>, Option<String>)> {
+        let (lsym, is_std) = if let Some(def) = ast.definition(callee_offset) {
+            match def {
+                fennel_parser::Definition::Symbol(s, _)
+                | fennel_parser::Definition::SymbolField(s, _) => (s, false),
+                _ => return None,
+            }
+        } else if let Some(fennel_parser::Definition::Symbol(s, _)) =
+            self.std_ast.definition_for_global(callee_name)
+        {
+            (s, true)
+        } else {
+            let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+            if let Some(s) = std_symbols.into_iter().find(|s| s.token.text == callee_name) {
+                (s.clone(), true)
+            } else {
+                return None;
+            }
+        };
+
+        let (def_ast, def_root) = if is_std {
+            (&self.std_ast, SyntaxNode::new_root(self.std_ast.root.clone()))
+        } else {
+            (ast, SyntaxNode::new_root(ast.root.clone()))
+        };
+
+        let def_offset = lsym.token.range.start();
+        let token = def_root.token_at_offset(def_offset).right_biased()?;
+        let func_node = token.parent_ancestors().find(|n| {
+            matches!(n.kind(), SyntaxKind::N_FN | SyntaxKind::N_LAMBDA | SyntaxKind::N_MACRO)
+        })?;
+
+        let param_table = func_node.children().find(|n| n.kind() == SyntaxKind::N_PARAM_TABLE)?;
+
+        let mut params = Vec::new();
+        for element in param_table.descendants_with_tokens() {
+            if let Some(t) = element.into_token()
+                && matches!(t.kind(), SyntaxKind::SYMBOL | SyntaxKind::VARARG)
+            {
+                params.push(t.text().to_string());
+            }
+        }
+
+        let docstring = def_ast.docstring(lsym.token.range);
+        let label = format!("(fn {} [{}])", callee_name, params.join(" "));
+
+        Some((label, params, docstring))
     }
 }
 

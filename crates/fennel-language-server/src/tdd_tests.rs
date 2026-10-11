@@ -12,10 +12,6 @@ mod tests {
         let code = "(local x 123)";
         let (backend, uri) = setup_backend(code).await;
 
-        // Position on '123'
-        // (local x 123)
-        // 01234567890
-        //           ^ 10
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier::new(uri),
@@ -40,10 +36,6 @@ mod tests {
         let code = "(let [x 1] (+ x 2))";
         let (backend, uri) = setup_backend(code).await;
 
-        // Position on 'x' in (+ x 2)
-        // (let [x 1] (+ x 2))
-        // 0123456789012345678
-        //               ^ 14
         let params = SelectionRangeParams {
             text_document: TextDocumentIdentifier::new(uri),
             positions: vec![Position::new(0, 14)],
@@ -156,15 +148,10 @@ mod tests {
 
     /// TDD for Task 7: Signature Help
     #[tokio::test]
-    #[ignore = "signature_help provider not yet implemented"]
     async fn test_signature_help() {
         let code = "(fn my-func [a b c] nil) (my-func 1 )";
         let (backend, uri) = setup_backend(code).await;
 
-        // Position after '1 '
-        // (fn my-func [a b c] nil) (my-func 1 )
-        // 0123456789012345678901234567890123456
-        //                                     ^ 36
         let params = SignatureHelpParams {
             context: None,
             text_document_position_params: TextDocumentPositionParams {
@@ -182,7 +169,29 @@ mod tests {
         assert!(sig.label.contains("my-func"));
         assert!(sig.label.contains("[a b c]"));
 
-        // Active parameter should be 1 (the second one, 'b')
+        assert_eq!(help.active_parameter, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_signature_help_stub() {
+        let code = "(assert true )";
+        let (backend, uri) = setup_backend(code).await;
+
+        let params = SignatureHelpParams {
+            context: None,
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri),
+                position: Position::new(0, 13),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+
+        let response = backend.signature_help(params).await.expect("should not error");
+        let help = response.expect("should return signature help");
+
+        assert_eq!(help.signatures.len(), 1);
+        let sig = &help.signatures[0];
+        assert!(sig.label.contains("assert"));
         assert_eq!(help.active_parameter, Some(1));
     }
 
