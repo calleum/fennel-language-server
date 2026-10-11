@@ -607,4 +607,25 @@ mod tests {
         assert_eq!(links[1].target, None);
         assert_eq!(links[1].range.start.line, 1);
     }
+
+    #[tokio::test]
+    async fn test_while_document_symbol_and_folding() {
+        let code = "(while condition\n  (let [x 1]\n    x))\n";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_while.fnl", code);
+
+        let symbols_resp = harness.document_symbols(&uri).await.unwrap().unwrap();
+        if let DocumentSymbolResponse::Nested(symbols) = symbols_resp {
+            assert_eq!(symbols.len(), 1);
+            assert_eq!(symbols[0].name, "while");
+            assert_eq!(symbols[0].kind, SymbolKind::OPERATOR);
+            let children = symbols[0].children.as_ref().unwrap();
+            assert_eq!(children[0].name, "x");
+        } else {
+            panic!("Expected nested document symbols");
+        }
+
+        let folds = harness.folding_range(&uri).await.unwrap().unwrap();
+        assert!(folds.iter().any(|f| f.start_line == 0 && f.end_line == 2));
+    }
 }

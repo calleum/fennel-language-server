@@ -178,6 +178,20 @@ impl Ast {
                         None,
                     ));
                 }
+            } else if let Some(while_node) = nodes::While::cast(child.clone()) {
+                let kw_range = while_node
+                    .keyword_token()
+                    .map(|t| t.text_range())
+                    .unwrap_or_else(|| while_node.syntax().text_range());
+                let children = self.get_children(while_node.syntax().clone());
+                symbols.push(AstDocumentSymbol::new(
+                    "while".to_string(),
+                    None,
+                    models::ValueKind::While,
+                    while_node.syntax().text_range(),
+                    kw_range,
+                    if children.is_empty() { None } else { Some(children) },
+                ));
             } else {
                 symbols.extend(self.get_children(child));
             }
@@ -1142,6 +1156,19 @@ mod tests {
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].0, PathBuf::from("other-file"));
         assert_eq!(links[1].0, PathBuf::from("another-file"));
+    }
+
+    #[test]
+    fn test_document_symbols_while() {
+        let text = "(while true (let [x 1] x))";
+        let ast = parse(text.chars(), HashSet::new());
+        let symbols = ast.document_symbols();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "while");
+        assert_eq!(symbols[0].kind, models::ValueKind::While);
+        let while_children = symbols[0].children.as_ref().unwrap();
+        assert_eq!(while_children.len(), 1);
+        assert_eq!(while_children[0].name, "x");
     }
 
     #[test]

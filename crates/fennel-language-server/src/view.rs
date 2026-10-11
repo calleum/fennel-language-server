@@ -30,7 +30,7 @@ pub fn value_kind_to_symbol_kind(val: ValueKind) -> SymbolKind {
         ValueKind::Func => SymbolKind::FUNCTION,
         ValueKind::Param => SymbolKind::TYPE_PARAMETER,
         ValueKind::MacroParam => SymbolKind::TYPE_PARAMETER,
-        ValueKind::Match => SymbolKind::OPERATOR,
+        ValueKind::Match | ValueKind::While => SymbolKind::OPERATOR,
         ValueKind::String => SymbolKind::STRING,
         ValueKind::Nil => SymbolKind::NULL,
         ValueKind::Bool => SymbolKind::BOOLEAN,
@@ -55,6 +55,7 @@ pub fn document_symbols_view(val: &ValueKind) -> bool {
         | ValueKind::String
         | ValueKind::Nil
         | ValueKind::Match
+        | ValueKind::While
         | ValueKind::KvTable
         | ValueKind::Macro
         | ValueKind::Module
@@ -75,6 +76,7 @@ pub(crate) fn value_kind(kind: &models::ValueKind) -> &'static str {
         models::ValueKind::SeqTable => "[...]",
         models::ValueKind::KvTable => "{...}",
         models::ValueKind::FileHandle => "<file handle>",
+        models::ValueKind::While => "while",
         models::ValueKind::Func
         | models::ValueKind::Macro
         | models::ValueKind::Param

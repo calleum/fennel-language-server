@@ -100,6 +100,7 @@ pub enum ValueKind {
     ModuleField(PathBuf, Vec<String>),
     Require(Option<PathBuf>),
     FileHandle,
+    While,
     Unknown,
     Symbol,
 }
@@ -243,6 +244,7 @@ impl fmt::Display for ValueKind {
             Self::ModuleField(_, _) => "module field",
             Self::Require(_) => "require",
             Self::FileHandle => "file handle",
+            Self::While => "while",
             Self::Symbol => "symbol",
             Self::Unknown => "(lsp:unknown)",
         };

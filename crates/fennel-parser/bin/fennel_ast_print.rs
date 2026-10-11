@@ -110,6 +110,7 @@ fn typed_label(node: &SyntaxNode) -> &'static str {
         Catch,
         If,
         When,
+        While,
         For,
         Each,
         Do,

@@ -28,7 +28,7 @@ pub enum EvalAst {
 ast_assoc!(
     NilAst, [
         Var, Set, Tset, Local, Global, ImportMacros, RequireMacros,
-        Macro, Macros, EvalCompiler, Each, For, Lua, Macrodebug,
+        Macro, Macros, EvalCompiler, Each, For, Lua, Macrodebug, While,
     ]
 );
 

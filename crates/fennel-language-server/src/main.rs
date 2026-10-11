@@ -1673,6 +1673,7 @@ fn is_folding_node_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::N_MACRO
             | SyntaxKind::N_LET
             | SyntaxKind::N_MATCH
+            | SyntaxKind::N_WHILE
     )
 }
 

@@ -52,6 +52,7 @@ ast_node!(Do, N_DO);
 ast_node!(Thread, N_THREAD);
 ast_node!(Doto, N_DOTO);
 ast_node!(When, N_WHEN);
+ast_node!(While, N_WHILE);
 ast_node!(Icollect, N_ICOLLECT);
 ast_node!(Fcollect, N_FCOLLECT);
 ast_node!(Collect, N_COLLECT);
@@ -432,6 +433,20 @@ impl Include {
         let path = self.module_path()?;
         let range = self.string_token()?.text_range();
         Some((path, range))
+    }
+}
+
+impl While {
+    pub fn keyword_token(&self) -> Option<SyntaxToken> {
+        self.syntax().first_token()
+    }
+
+    pub fn condition(&self) -> Option<SyntaxNode> {
+        self.syntax().children().find(|n| n.kind() == SyntaxKind::N_COND)
+    }
+
+    pub fn body(&self) -> Option<SyntaxNode> {
+        self.syntax().children().find(|n| n.kind() == SyntaxKind::N_BODY)
     }
 }
 
