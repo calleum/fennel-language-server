@@ -1019,7 +1019,7 @@ mod tests {
         );
     }
 
-    #[ignore = "FIXME"]
+    #[ignore = "invalid Fennel syntax: nested local statement used as expression value; scope isolation not tracked"]
     #[test]
     fn definition_nest() {
         let text = "(local z (local z 3)) (print z)";
@@ -1049,8 +1049,6 @@ mod tests {
         assert_eq!(parse(text.chars(), HashSet::new()).definition(17), None);
     }
 
-    // seems a fennel compiler error
-    #[ignore]
     #[test]
     fn definition_undefined() {
         let text = "(local z (fn x [] (print z)))";

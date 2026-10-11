@@ -31,8 +31,6 @@ pub(crate) enum ScopeExtend {
     Current,
     This(crate::SyntaxNode),
     Outer,
-    #[expect(unused, reason = "reserved for potential future scope extension")]
-    File, // useless?
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

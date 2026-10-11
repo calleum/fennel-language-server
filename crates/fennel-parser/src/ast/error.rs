@@ -210,7 +210,7 @@ impl MatchTry {
 }
 
 impl RequireMacros {
-    pub(crate) fn depcrated(&self) -> Error {
+    pub(crate) fn deprecated(&self) -> Error {
         Error::new(
             self.syntax().first_token().expect("RequireMacros has a token").text_range(),
             Deprecated("0.4.0", "import-macros"),
@@ -219,7 +219,7 @@ impl RequireMacros {
 }
 
 impl PickArgs {
-    pub(crate) fn depcrated(&self) -> Error {
+    pub(crate) fn deprecated(&self) -> Error {
         Error::new(
             self.syntax().first_token().expect("PickArgs has a token").text_range(),
             Deprecated("0.10.0", "pick-values"),
@@ -228,7 +228,7 @@ impl PickArgs {
 }
 
 impl Global {
-    pub(crate) fn depcrated(&self) -> Error {
+    pub(crate) fn deprecated(&self) -> Error {
         Error::new(
             self.syntax().first_token().expect("Global has a token").text_range(),
             Deprecated("1.1.0", "_G table"),
@@ -237,7 +237,7 @@ impl Global {
 }
 
 impl IntoClause {
-    pub(crate) fn depcrated(&self) -> Option<Error> {
+    pub(crate) fn deprecated(&self) -> Option<Error> {
         let token = self.syntax().first_token()?;
         if token.text().starts_with(':') {
             Some(Error::new(token.text_range(), Deprecated("1.2.0", "&into")))
@@ -248,7 +248,7 @@ impl IntoClause {
 }
 
 impl UntilClause {
-    pub(crate) fn depcrated(&self) -> Option<Error> {
+    pub(crate) fn deprecated(&self) -> Option<Error> {
         let token = self.syntax().first_token()?;
         if token.text().starts_with(':') {
             Some(Error::new(token.text_range(), Deprecated("1.2.0", "&until")))
@@ -273,11 +273,11 @@ impl Provider {
             Self::BindingSymbol(n) => vec![n.field_and_method()].into_iter(),
             Self::RightSymbol(n) => vec![n.method_call()].into_iter(),
             Self::MatchTry(n) => n.catch().into_iter(),
-            Self::RequireMacros(n) => vec![Some(n.depcrated())].into_iter(),
-            Self::PickArgs(n) => vec![Some(n.depcrated())].into_iter(),
-            Self::Global(n) => vec![Some(n.depcrated())].into_iter(),
-            Self::IntoClause(n) => vec![n.depcrated()].into_iter(),
-            Self::UntilClause(n) => vec![n.depcrated()].into_iter(),
+            Self::RequireMacros(n) => vec![Some(n.deprecated())].into_iter(),
+            Self::PickArgs(n) => vec![Some(n.deprecated())].into_iter(),
+            Self::Global(n) => vec![Some(n.deprecated())].into_iter(),
+            Self::IntoClause(n) => vec![n.deprecated()].into_iter(),
+            Self::UntilClause(n) => vec![n.deprecated()].into_iter(),
         }
     }
 }

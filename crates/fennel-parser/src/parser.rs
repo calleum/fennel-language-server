@@ -332,7 +332,6 @@ impl<'p> Parser<'p> {
             { N_LOCAL ::= (KEYWORD_LOCAL),
                           (N_ASSIGN_PAIR) },
 
-            // FIXME: DOTO macro
             { N_TSET ::= (KEYWORD_TSET),
                          (N_SEXP),
                          (N_SEXP),

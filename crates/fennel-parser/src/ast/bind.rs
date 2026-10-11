@@ -738,12 +738,6 @@ impl models::ScopeExtend {
                         .end()
                 }
             }
-            Self::File => node
-                .ancestors()
-                .last()
-                .and_then(ScopeAst::cast)
-                .expect("node has file scope ancestor")
-                .end(),
         };
         let start = node.text_range().end();
         TextRange::new(start, scope_end)
