@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::tdd_helper::{STUBS_URI, setup_backend};
+    use crate::tdd_helper::{STUBS_URI, TestHarness, setup_backend};
     use tower_lsp::LanguageServer;
     use tower_lsp::lsp_types::*;
 
@@ -477,5 +477,115 @@ mod tests {
         let str_tok = absolute_tokens.iter().find(|t| t.0 == 3 && t.1 == 7);
         assert!(str_tok.is_some());
         assert_eq!(str_tok.unwrap().3, TOKEN_TYPE_STRING);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_rename() {
+        let code = ";; a comment\n(let [foo 1] (+ foo 2))\n(print \"hello\")";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test.fnl", code);
+
+        let res = harness.prepare_rename(&uri, 1, 6).await.unwrap();
+        assert!(res.is_some());
+        if let Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder }) = res {
+            assert_eq!(placeholder, "foo");
+            assert_eq!(range.start.line, 1);
+            assert_eq!(range.start.character, 6);
+            assert_eq!(range.end.character, 9);
+        } else {
+            panic!("Expected RangeWithPlaceholder");
+        }
+
+        let res = harness.prepare_rename(&uri, 1, 16).await.unwrap();
+        assert!(res.is_some());
+        if let Some(PrepareRenameResponse::RangeWithPlaceholder { placeholder, .. }) = res {
+            assert_eq!(placeholder, "foo");
+        } else {
+            panic!("Expected RangeWithPlaceholder");
+        }
+
+        let res = harness.prepare_rename(&uri, 0, 3).await.unwrap();
+        assert!(res.is_none());
+
+        let res = harness.prepare_rename(&uri, 1, 1).await.unwrap();
+        assert!(res.is_none());
+
+        let res = harness.prepare_rename(&uri, 1, 10).await.unwrap();
+        assert!(res.is_none());
+
+        let res = harness.prepare_rename(&uri, 2, 1).await.unwrap();
+        assert!(res.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cross_file_rename_module() {
+        let utils_code = "(fn add [a b] (+ a b))\n{: add}";
+        let main_code = "(local utils (require :utils))\n(utils.add 1 2)";
+
+        let mut harness = TestHarness::with_temp_dir();
+        let utils_uri = harness.write_and_open_file("utils.fnl", utils_code);
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
+
+        let edit = harness.rename(&utils_uri, 0, 4, "sum").await.unwrap();
+        assert!(edit.is_some());
+        let edit = edit.unwrap();
+        let changes = edit.changes.expect("changes map should exist");
+
+        assert!(changes.contains_key(&utils_uri), "should update utils.fnl");
+        assert!(changes.contains_key(&main_uri), "should update main.fnl");
+
+        let utils_edits = &changes[&utils_uri];
+        assert_eq!(utils_edits.len(), 2);
+        assert!(utils_edits.iter().all(|e| e.new_text == "sum"));
+
+        let main_edits = &changes[&main_uri];
+        assert_eq!(main_edits.len(), 1);
+        assert_eq!(main_edits[0].new_text, "sum");
+        assert_eq!(main_edits[0].range.start.line, 1);
+        assert_eq!(main_edits[0].range.start.character, 7);
+        assert_eq!(main_edits[0].range.end.character, 10);
+    }
+
+    #[tokio::test]
+    async fn test_cross_file_rename_from_usage() {
+        let utils_code = "(fn add [a b] (+ a b))\n{: add}";
+        let main_code = "(local utils (require :utils))\n(utils.add 1 2)";
+
+        let mut harness = TestHarness::with_temp_dir();
+        let utils_uri = harness.write_and_open_file("utils.fnl", utils_code);
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
+
+        let edit = harness.rename(&main_uri, 1, 7, "sum").await.unwrap();
+        assert!(edit.is_some());
+        let edit = edit.unwrap();
+        let changes = edit.changes.expect("changes map should exist");
+
+        assert!(changes.contains_key(&utils_uri));
+        assert!(changes.contains_key(&main_uri));
+    }
+
+    #[tokio::test]
+    async fn test_cross_file_rename_macros() {
+        let macro_code = "(fn my-macro [] (print \"macro\"))\n{: my-macro}";
+        let main_code = "(import-macros {: my-macro} :mymacros)\n(my-macro)";
+
+        let mut harness = TestHarness::with_temp_dir();
+        let macro_uri = harness.write_and_open_file("mymacros.fnl", macro_code);
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
+
+        let edit = harness.rename(&macro_uri, 0, 4, "cool-macro").await.unwrap();
+        assert!(edit.is_some());
+        let edit = edit.unwrap();
+        let changes = edit.changes.expect("changes map should exist");
+
+        assert!(changes.contains_key(&macro_uri), "should update mymacros.fnl");
+        assert!(changes.contains_key(&main_uri), "should update main.fnl");
+
+        let macro_edits = &changes[&macro_uri];
+        assert_eq!(macro_edits.len(), 2);
+
+        let main_edits = &changes[&main_uri];
+        assert_eq!(main_edits.len(), 2);
+        assert!(main_edits.iter().all(|e| e.new_text == "cool-macro"));
     }
 }

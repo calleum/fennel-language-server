@@ -619,6 +619,18 @@ impl Ast {
         }
     }
 
+    pub fn all_l_symbols(&self) -> impl Iterator<Item = &models::LSymbol> {
+        self.l_symbols.0.values()
+    }
+
+    pub fn r_symbols(&self) -> &[models::RSymbol] {
+        &self.r_symbols
+    }
+
+    pub fn resolve_l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> Option<&models::LSymbol> {
+        self.l_symbol_by_r(r_symbol).found()
+    }
+
     pub fn r_symbol(&self, offset: u32) -> Option<&models::RSymbol> {
         self.r_symbols.iter().find(|s| s.token.range.contains(TextSize::from(offset)))
     }
@@ -633,9 +645,9 @@ enum FindLSymbol<'a> {
     Skip,
 }
 
-impl FindLSymbol<'_> {
+impl<'a> FindLSymbol<'a> {
     // I don't care about skip!
-    fn found(&self) -> Option<&models::LSymbol> {
+    fn found(self) -> Option<&'a models::LSymbol> {
         if let Self::Found(symbol) = self { Some(symbol) } else { None }
     }
 }

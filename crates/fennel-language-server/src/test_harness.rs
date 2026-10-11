@@ -241,6 +241,37 @@ impl TestHarness {
         };
         self.backend.selection_range(params).await
     }
+
+    pub async fn prepare_rename(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+            position: Position::new(line, character),
+        };
+        self.backend.prepare_rename(params).await
+    }
+
+    pub async fn rename(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> Result<Option<WorkspaceEdit>> {
+        let params = RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(line, character),
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.rename(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {
