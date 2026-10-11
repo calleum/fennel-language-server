@@ -741,4 +741,48 @@ mod tests {
             harness.execute_command(&cmd.command, cmd.arguments.clone().unwrap()).await.unwrap();
         assert_eq!(res, Some(serde_json::Value::Bool(true)));
     }
+
+    #[tokio::test]
+    async fn test_background_workspace_indexing() {
+        let mut harness = TestHarness::with_temp_dir();
+        let (_lib_path, lib_url) =
+            harness.write_file("src/lib.fnl", "(fn compute-sum [a b] (+ a b))\n{: compute-sum}\n");
+        let (_sub_path, sub_url) =
+            harness.write_file("nested/deep/sub.fnl", "(fn deep-helper [] 123)\n{: deep-helper}\n");
+
+        assert!(harness.backend.ast_map.get(&lib_url).is_none());
+        assert!(harness.backend.ast_map.get(&sub_url).is_none());
+
+        harness.initialize().await.unwrap();
+
+        assert!(harness.backend.ast_map.get(&lib_url).is_some());
+        assert!(harness.backend.doc_map.get(&lib_url).is_some());
+        assert!(harness.backend.ast_map.get(&sub_url).is_some());
+        assert!(harness.backend.doc_map.get(&sub_url).is_some());
+
+        let symbols = harness.workspace_symbols("compute-sum").await.unwrap().unwrap();
+        assert!(!symbols.is_empty());
+        assert_eq!(symbols.first().unwrap().name, "compute-sum");
+
+        let deep_symbols = harness.workspace_symbols("deep-helper").await.unwrap().unwrap();
+        assert!(!deep_symbols.is_empty());
+        assert_eq!(deep_symbols.first().unwrap().name, "deep-helper");
+
+        let main_url = harness.write_and_open_file(
+            "src/main.fnl",
+            "(local my-lib (require :lib))\n(my-lib.compute-sum 1 2)\n",
+        );
+
+        let def = harness.goto_definition(&main_url, 1, 8).await.unwrap();
+        assert!(def.is_some());
+        match def.unwrap() {
+            GotoDefinitionResponse::Array(locs) => {
+                assert!(locs.iter().any(|l| l.uri == lib_url));
+            }
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert_eq!(loc.uri, lib_url);
+            }
+            _ => panic!("Expected definition response"),
+        }
+    }
 }

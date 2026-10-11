@@ -57,12 +57,19 @@ impl tower_lsp::LanguageServer for Backend {
             folders.into_iter().for_each(|folder| {
                 self.workspace_map.insert(folder.uri, folder.name);
             });
+        } else if let Some(uri) = params.root_uri {
+            self.workspace_map.insert(uri, "root".to_string());
         }
 
         if let Some(settings) = params.initialization_options
             && let Ok(config) = serde_json::from_value::<config::Configuration>(settings)
         {
             *self.config.write().map_err(|_err| Error::internal_error())? = config;
+        }
+
+        let folders: Vec<Url> = self.workspace_map.iter().map(|r| r.key().clone()).collect();
+        for fol in folders {
+            self.index_workspace_folder(&fol).await;
         }
 
         Ok(InitializeResult {
@@ -1450,12 +1457,17 @@ impl tower_lsp::LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
-        for fol in self.workspace_map.iter() {
-            if let Ok(files) = collect_fnl_filepaths(fol.key().clone()) {
-                for f in &files {
-                    self.get_or_parse_ast(f).await;
-                }
-            }
+        let folders: Vec<Url> = self.workspace_map.iter().map(|r| r.key().clone()).collect();
+        for fol in folders {
+            self.index_workspace_folder(&fol).await;
+        }
+        let libraries: Vec<Url> = if let Ok(config) = self.config.read() {
+            config.fennel.workspace.library.iter().map(|u| u.0.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        for lib in libraries {
+            self.index_workspace_folder(&lib).await;
         }
     }
 
@@ -1527,18 +1539,25 @@ impl tower_lsp::LanguageServer for Backend {
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        params.event.added.iter().for_each(|r| {
+        for r in &params.event.added {
             self.workspace_map.insert(r.uri.clone(), r.name.clone());
-        });
-        params.event.removed.iter().for_each(|r| {
+            self.index_workspace_folder(&r.uri).await;
+        }
+        for r in &params.event.removed {
             self.workspace_map.remove(&r.uri);
-        });
+        }
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         match <config::Configuration as serde::Deserialize>::deserialize(params.settings) {
             Ok(config) => {
                 *self.config.write().expect("config lock should not be poisoned") = config.clone();
+
+                let libraries: Vec<Url> =
+                    config.fennel.workspace.library.iter().map(|u| u.0.clone()).collect();
+                for lib in libraries {
+                    self.index_workspace_folder(&lib).await;
+                }
 
                 let globals = self.collect_globals();
 
@@ -1575,11 +1594,20 @@ impl Backend {
         globals
     }
 
-    async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
+    pub(crate) async fn index_workspace_folder(&self, folder_uri: &Url) {
+        if let Ok(files) = collect_fnl_filepaths(folder_uri.clone()) {
+            for f in &files {
+                self.get_or_parse_ast(f).await;
+            }
+        }
+    }
+
+    pub(crate) async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
         if let Some(ast) = self.ast_map.get(uri) {
             return Some(ast.clone());
         }
-        if let Ok(text) = std::fs::read_to_string(uri.path()) {
+        let file_path = uri.to_file_path().ok()?;
+        if let Ok(text) = std::fs::read_to_string(&file_path) {
             let globals = self.collect_globals();
             let ast = fennel_parser::parse(text.chars(), globals);
             self.ast_map.insert(uri.clone(), ast.clone());
@@ -1775,7 +1803,10 @@ impl Backend {
             };
 
             let uri_fnl = uri.join("fnl/").ok()?;
-            check_exist(&uri_fnl, "fnl", false).or_else(|| check_exist(&uri_fnl, "fnl", true))
+            check_exist(&uri_fnl, "fnl", false)
+                .or_else(|| check_exist(&uri_fnl, "fnl", true))
+                .or_else(|| check_exist(&uri, "fnl", false))
+                .or_else(|| check_exist(&uri, "fnl", true))
         });
 
         workspace_file.or(library_file).or_else(|| {
@@ -1999,14 +2030,28 @@ async fn tcp_listen(address: &str) -> (Box<dyn AsyncRead + Unpin>, Box<dyn Async
 
 fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
     let mut paths = Vec::new();
-    for entry in WalkDir::new(root.to_file_path().map_err(|_path| Error::internal_error())?)
+    let root_path = root.to_file_path().map_err(|_path| Error::internal_error())?;
+    for entry in WalkDir::new(root_path)
         .follow_links(true)
         .into_iter()
-        .filter_entry(|e| e.file_name().to_str().map(|s| s.ends_with("fnl")).unwrap_or(false))
+        .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy();
+                !name.starts_with('.')
+            } else {
+                e.file_name().to_str().is_some_and(|s| s.ends_with(".fnl"))
+            }
+        })
         .filter_map(|e| e.ok())
     {
-        let f_url = Url::from_file_path(entry.path()).map_err(|_url| Error::internal_error())?;
-        paths.push(f_url);
+        if entry.file_type().is_file()
+            && let Ok(f_url) = Url::from_file_path(entry.path())
+        {
+            paths.push(f_url);
+        }
     }
     Ok(paths)
 }

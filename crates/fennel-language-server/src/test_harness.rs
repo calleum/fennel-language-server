@@ -330,6 +330,22 @@ impl TestHarness {
         };
         self.backend.execute_command(params).await
     }
+
+    pub async fn initialize(&self) -> Result<InitializeResult> {
+        let temp_path = self.temp_path();
+        let root_uri = Url::from_directory_path(temp_path).expect("valid directory URL");
+        let params = InitializeParams {
+            root_uri: Some(root_uri.clone()),
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: root_uri,
+                name: "root".to_string(),
+            }]),
+            ..Default::default()
+        };
+        let res = self.backend.initialize(params).await?;
+        self.backend.initialized(InitializedParams {}).await;
+        Ok(res)
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {
