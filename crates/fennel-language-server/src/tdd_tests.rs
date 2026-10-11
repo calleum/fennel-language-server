@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use crate::tdd_helper::{STUBS_URI, TestHarness, setup_backend};
-    use tower_lsp::LanguageServer;
     use tower_lsp::lsp_types::*;
 
     /// LEVEL 0: The "What am I?" Hover
