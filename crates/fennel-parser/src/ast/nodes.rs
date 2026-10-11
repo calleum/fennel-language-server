@@ -63,6 +63,7 @@ ast_node!(Macro, N_MACRO);
 ast_node!(Macros, N_MACROS);
 ast_node!(EvalCompiler, N_EVAL_COMPILER);
 ast_node!(SymbolCall, N_SYMBOL_CALL);
+ast_node!(Include, N_INCLUDE);
 ast_node!(Lua, N_LUA);
 ast_node!(Macrodebug, N_MACRODEBUG);
 ast_node!(IntoClause, N_INTO_CLAUSE);
@@ -397,6 +398,40 @@ impl SymbolCall {
 
     pub fn require(&self) -> Option<PathBuf> {
         self.require_path_and_range().map(|(p, _)| p)
+    }
+}
+
+impl Include {
+    pub fn string_token(&self) -> Option<SyntaxToken> {
+        self.syntax()
+            .children()
+            .find(|n| n.kind() == SyntaxKind::N_STRING_LITERAL)
+            .and_then(|n| n.first_token())
+    }
+
+    pub fn module_name(&self) -> Option<String> {
+        let token = self.string_token()?;
+        let text = token.text();
+        match token.kind() {
+            SyntaxKind::COLON_STRING => text.strip_prefix(':').map(ToString::to_string),
+            SyntaxKind::QUOTE_STRING => {
+                let stripped = text.strip_prefix('"')?.strip_suffix('"')?;
+                Some(stripped.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn module_path(&self) -> Option<PathBuf> {
+        let name = self.module_name()?;
+        let s = name.trim_start_matches(['.', '/']);
+        Some(PathBuf::from(s.replace('.', "/")))
+    }
+
+    pub fn module_path_and_range(&self) -> Option<(PathBuf, TextRange)> {
+        let path = self.module_path()?;
+        let range = self.string_token()?.text_range();
+        Some((path, range))
     }
 }
 

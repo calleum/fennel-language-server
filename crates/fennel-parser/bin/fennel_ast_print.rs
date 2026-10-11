@@ -129,6 +129,7 @@ fn typed_label(node: &SyntaxNode) -> &'static str {
         Macros,
         EvalCompiler,
         SymbolCall,
+        Include,
         Lua,
         Macrodebug,
         IntoClause,

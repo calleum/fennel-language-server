@@ -163,6 +163,21 @@ impl Ast {
                         ));
                     }
                 }
+            } else if let Some(include) = nodes::Include::cast(child.clone()) {
+                if let Some(name) = include.module_name() {
+                    let string_range = include
+                        .string_token()
+                        .map(|t| t.text_range())
+                        .unwrap_or_else(|| include.syntax().text_range());
+                    symbols.push(AstDocumentSymbol::new(
+                        name,
+                        None,
+                        models::ValueKind::Module,
+                        include.syntax().text_range(),
+                        string_range,
+                        None,
+                    ));
+                }
             } else {
                 symbols.extend(self.get_children(child));
             }
@@ -639,8 +654,12 @@ impl Ast {
         let root = SyntaxNode::new_root(self.root.clone());
         let mut links = Vec::new();
         for node in root.descendants() {
-            if let Some(call) = nodes::SymbolCall::cast(node)
+            if let Some(call) = nodes::SymbolCall::cast(node.clone())
                 && let Some(link) = call.require_path_and_range()
+            {
+                links.push(link);
+            } else if let Some(include) = nodes::Include::cast(node)
+                && let Some(link) = include.module_path_and_range()
             {
                 links.push(link);
             }
@@ -1106,6 +1125,23 @@ mod tests {
         assert!(symbols[1].children.is_none());
         let foo_children = symbols[0].children.as_ref().unwrap();
         assert_eq!(foo_children[0].name, "y");
+    }
+
+    #[test]
+    fn test_document_symbols_include() {
+        let text = "(include :other-file)\n(include \"another-file\")";
+        let ast = parse(text.chars(), HashSet::new());
+        let symbols = ast.document_symbols();
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "other-file");
+        assert_eq!(symbols[0].kind, models::ValueKind::Module);
+        assert_eq!(symbols[1].name, "another-file");
+        assert_eq!(symbols[1].kind, models::ValueKind::Module);
+
+        let links = ast.require_links();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].0, PathBuf::from("other-file"));
+        assert_eq!(links[1].0, PathBuf::from("another-file"));
     }
 
     #[test]
