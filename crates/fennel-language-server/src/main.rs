@@ -118,7 +118,7 @@ impl tower_lsp::LanguageServer for Backend {
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["fennel.addGlobal".into()],
+                    commands: vec!["fennel.addGlobal".into(), "fennel.expandMacro".into()],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 semantic_tokens_provider: Some(
@@ -1036,6 +1036,27 @@ impl tower_lsp::LanguageServer for Backend {
                         }));
                     return Ok(Some(Hover { contents, range: Some(range) }));
                 }
+
+                if let Some(macro_info) = ast.expand_macro(offset) {
+                    let range = lsp_range(&doc, macro_info.call_range)?;
+                    let header = MarkedString::LanguageString(LanguageString {
+                        language: "fennel".into(),
+                        value: macro_info.signature.to_string(),
+                    });
+                    let body = format!(
+                        "{}\n\n---\n**Macro expands to:**\n```fennel\n{}\n```",
+                        macro_info.docstring, macro_info.expansion
+                    );
+                    let contents = HoverContents::Array(vec![
+                        header,
+                        MarkedString::LanguageString(LanguageString {
+                            language: "markdown".into(),
+                            value: body,
+                        }),
+                    ]);
+                    return Ok(Some(Hover { contents, range: Some(range) }));
+                }
+
                 return Ok(None);
             }
         };
@@ -1399,6 +1420,22 @@ impl tower_lsp::LanguageServer for Backend {
             }
         }
 
+        if let Some(macro_info) = ast.expand_macro(offset)
+            && let Ok(call_lsp_range) = lsp_range(&doc, macro_info.call_range)
+        {
+            let mut map = HashMap::new();
+            map.insert(
+                uri.clone(),
+                vec![TextEdit::new(call_lsp_range, macro_info.expansion.clone())],
+            );
+            res.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Expand macro".to_string(),
+                kind: Some(CodeActionKind::REFACTOR_REWRITE),
+                edit: Some(WorkspaceEdit::new(map)),
+                ..Default::default()
+            }));
+        }
+
         if let Some(only) = &params.context.only {
             res.retain(|action_or_cmd| {
                 if let CodeActionOrCommand::CodeAction(ca) = action_or_cmd {
@@ -1420,6 +1457,39 @@ impl tower_lsp::LanguageServer for Backend {
         &self,
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
+        if params.command == "fennel.expandMacro" || params.command == "expandMacro" {
+            let Some(uri_val) = params.arguments.first() else {
+                return Ok(None);
+            };
+            let Some(uri_str) = uri_val.as_str() else {
+                return Ok(None);
+            };
+            let uri = Url::parse(uri_str).map_err(|e| Error::invalid_params(e.to_string()))?;
+            let Some(ast) = self.ast_map.get(&uri) else {
+                return Ok(None);
+            };
+            let Some(doc) = self.doc_map.get(&uri) else {
+                return Ok(None);
+            };
+
+            let offset = if let Some(pos_val) = params.arguments.get(1) {
+                if let Ok(pos) = serde_json::from_value::<Position>(pos_val.clone()) {
+                    position_to_byte_offset(&doc, pos)?
+                } else if let Some(offset_num) = pos_val.as_u64() {
+                    offset_num as u32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            if let Some(macro_info) = ast.expand_macro(offset) {
+                return Ok(Some(serde_json::Value::String(macro_info.expansion)));
+            }
+            return Ok(None);
+        }
+
         if params.command == "fennel.addGlobal" || params.command == "addGlobal" {
             let Some(arg) = params.arguments.first() else {
                 return Ok(None);

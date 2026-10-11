@@ -842,4 +842,93 @@ mod tests {
         assert_eq!(callee_out.from_ranges.first().unwrap().start.line, 4);
         assert_eq!(callee_out.from_ranges.get(1).expect("call 2").start.line, 5);
     }
+
+    #[tokio::test]
+    async fn test_macro_expansion_hover() {
+        let code = "(-> x (foo))";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_macro.fnl", code);
+
+        let hover = harness.hover(&uri, 0, 1).await.unwrap().expect("hover should exist");
+        if let HoverContents::Array(contents) = hover.contents {
+            let combined = contents
+                .iter()
+                .map(|c| match c {
+                    MarkedString::String(s) => s.clone(),
+                    MarkedString::LanguageString(ls) => ls.value.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                combined.contains("(foo x)"),
+                "Hover content should include expanded '(foo x)', got:\n{combined}"
+            );
+            assert!(
+                combined.contains("Macro expands to:"),
+                "Hover content should indicate macro expansion, got:\n{combined}"
+            );
+        } else {
+            panic!("Expected HoverContents::Array, got {:?}", hover.contents);
+        }
+
+        let code_thread = "(-> x (f 1) (g 2))";
+        let uri_thread = harness.open_virtual("file:///test_thread.fnl", code_thread);
+        let hover_thread =
+            harness.hover(&uri_thread, 0, 1).await.unwrap().expect("hover should exist");
+        if let HoverContents::Array(contents) = hover_thread.contents {
+            let combined = contents
+                .iter()
+                .map(|c| match c {
+                    MarkedString::String(s) => s.clone(),
+                    MarkedString::LanguageString(ls) => ls.value.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                combined.contains("(g (f x 1) 2)"),
+                "Hover content should include expanded '(g (f x 1) 2)', got:\n{combined}"
+            );
+        } else {
+            panic!("Expected HoverContents::Array");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_macro_expansion_command_and_code_action() {
+        let code = "(-> x (foo))";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_macro_cmd.fnl", code);
+
+        let res = harness
+            .execute_command(
+                "fennel.expandMacro",
+                vec![
+                    serde_json::Value::String(uri.to_string()),
+                    serde_json::to_value(Position::new(0, 1)).unwrap(),
+                ],
+            )
+            .await
+            .unwrap()
+            .expect("should return macro expansion");
+        assert_eq!(res, serde_json::Value::String("(foo x)".to_string()));
+
+        let actions = harness
+            .code_action(&uri, Range::new(Position::new(0, 1), Position::new(0, 3)), vec![])
+            .await
+            .unwrap()
+            .expect("code actions");
+        let expand_action = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) if ca.title == "Expand macro" => Some(ca),
+                _ => None,
+            })
+            .expect("should include 'Expand macro' code action");
+
+        let edit = expand_action.edit.as_ref().expect("edit should exist");
+        let changes = edit.changes.as_ref().expect("changes should exist");
+        let edits = changes.get(&uri).expect("edits for uri");
+        let first_edit = edits.first().expect("edit should exist");
+        assert_eq!(first_edit.new_text, "(foo x)");
+    }
 }

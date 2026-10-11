@@ -4,9 +4,13 @@ mod bind;
 mod error;
 pub mod eval;
 mod func;
+pub mod macro_expand;
 pub mod models;
 pub mod nodes;
 
+pub use self::macro_expand::{
+    MacroExpansionInfo, expand_macro_at_offset, expand_macro_node, is_macro_token,
+};
 pub use self::models::{
     Action, AstDocumentSymbol, AstSymbolInformation, Definition, Globals, SuppressErrorKind,
 };
@@ -87,6 +91,15 @@ impl Ast {
 
     pub fn on_save_errors(&self) -> impl Iterator<Item = &Error> {
         self.unused_l_symbol_errors.iter().filter(|e| !self.error_is_suppressed(e))
+    }
+
+    pub fn expand_macro(&self, offset: u32) -> Option<MacroExpansionInfo> {
+        let root = SyntaxNode::new_root(self.root.clone());
+        expand_macro_at_offset(&root, offset)
+    }
+
+    pub fn expand_macro_node(&self, node: &SyntaxNode) -> Option<MacroExpansionInfo> {
+        expand_macro_node(node)
     }
 
     pub fn definition(&self, offset: u32) -> Option<Definition> {
