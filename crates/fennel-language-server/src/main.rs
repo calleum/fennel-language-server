@@ -99,6 +99,10 @@ impl tower_lsp::LanguageServer for Backend {
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".into(), " ".into()]),
                     retrigger_characters: None,
@@ -677,6 +681,22 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         if changes.is_empty() { Ok(None) } else { Ok(Some(WorkspaceEdit::new(changes))) }
+    }
+
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
+        let uri = params.text_document.uri;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+
+        let mut links = Vec::new();
+        for (path, text_range) in ast.require_links() {
+            let target = self.find_file(&uri, path);
+            if let Ok(range) = lsp_range(&doc, text_range) {
+                links.push(DocumentLink { range, target, tooltip: None, data: None });
+            }
+        }
+
+        Ok(Some(links))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {

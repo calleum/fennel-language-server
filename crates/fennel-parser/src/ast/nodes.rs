@@ -375,22 +375,28 @@ impl KvTable {
 }
 
 impl SymbolCall {
-    pub(crate) fn call_name(&self) -> Option<String> {
+    pub fn call_name(&self) -> Option<String> {
         self.syntax().first_token().map(|t| t.to_string())
     }
 
-    pub(crate) fn is_require(&self) -> bool {
+    pub fn is_require(&self) -> bool {
         // TODO: follow symbol
         self.call_name().map(|name| name == "require").unwrap_or(false)
     }
 
-    pub(crate) fn require(&self) -> Option<PathBuf> {
+    pub fn require_path_and_range(&self) -> Option<(PathBuf, TextRange)> {
         if self.is_require() {
             let deepest_node = self.syntax().children().nth(1)?.first_token()?.parent()?;
-            get_ancestor::<Literal>(&deepest_node)?.cast_path()
+            let lit = get_ancestor::<Literal>(&deepest_node)?;
+            let path = lit.cast_path()?;
+            Some((path, lit.syntax().text_range()))
         } else {
             None
         }
+    }
+
+    pub fn require(&self) -> Option<PathBuf> {
+        self.require_path_and_range().map(|(p, _)| p)
     }
 }
 

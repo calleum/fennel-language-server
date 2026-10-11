@@ -634,6 +634,19 @@ impl Ast {
     pub fn r_symbol(&self, offset: u32) -> Option<&models::RSymbol> {
         self.r_symbols.iter().find(|s| s.token.range.contains(TextSize::from(offset)))
     }
+
+    pub fn require_links(&self) -> Vec<(PathBuf, TextRange)> {
+        let root = SyntaxNode::new_root(self.root.clone());
+        let mut links = Vec::new();
+        for node in root.descendants() {
+            if let Some(call) = nodes::SymbolCall::cast(node)
+                && let Some(link) = call.require_path_and_range()
+            {
+                links.push(link);
+            }
+        }
+        links
+    }
 }
 
 type LSymbolsIter<'a> = Box<dyn Iterator<Item = &'a models::LSymbol> + 'a>;

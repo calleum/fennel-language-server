@@ -272,6 +272,15 @@ impl TestHarness {
         };
         self.backend.rename(params).await
     }
+
+    pub async fn document_link(&self, uri: &Url) -> Result<Option<Vec<DocumentLink>>> {
+        let params = DocumentLinkParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.backend.document_link(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {

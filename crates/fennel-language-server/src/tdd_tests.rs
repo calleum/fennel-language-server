@@ -588,4 +588,23 @@ mod tests {
         assert_eq!(main_edits.len(), 2);
         assert!(main_edits.iter().all(|e| e.new_text == "cool-macro"));
     }
+
+    #[tokio::test]
+    async fn test_document_link() {
+        let mut harness = TestHarness::with_temp_dir();
+        let (_lib_path, lib_uri) = harness.write_file("mylib.fnl", "(fn foo [] 1)");
+        let main_code = "(local lsp (require :mylib))\n(local other (require :missing))";
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
+
+        let links = harness.document_link(&main_uri).await.unwrap();
+        assert!(links.is_some());
+        let links = links.unwrap();
+        assert_eq!(links.len(), 2);
+
+        assert_eq!(links[0].target, Some(lib_uri));
+        assert_eq!(links[0].range.start.line, 0);
+
+        assert_eq!(links[1].target, None);
+        assert_eq!(links[1].range.start.line, 1);
+    }
 }
