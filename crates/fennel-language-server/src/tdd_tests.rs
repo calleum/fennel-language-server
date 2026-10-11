@@ -786,6 +786,127 @@ mod tests {
         }
     }
 
+    /// A workspace file edited outside the editor must not keep serving a
+    /// stale AST. `did_change_watched_files` re-reads from disk.
+    #[tokio::test]
+    async fn test_watched_files_reindex_changed_file() {
+        let harness = TestHarness::with_temp_dir();
+        let (lib_path, lib_url) =
+            harness.write_file("src/lib.fnl", "(fn original-name [] 1)\n{: original-name}\n");
+
+        harness.initialize().await.unwrap();
+        assert!(harness.backend.ast_map.get(&lib_url).is_some());
+
+        // Edit on disk without opening the buffer.
+        std::fs::write(&lib_path, "(fn renamed-fn [] 1)\n{: renamed-fn}\n").unwrap();
+
+        harness
+            .backend
+            .did_change_watched_files(DidChangeWatchedFilesParams {
+                changes: vec![FileEvent { uri: lib_url.clone(), typ: FileChangeType::CHANGED }],
+            })
+            .await;
+
+        let ast = harness.backend.ast_map.get(&lib_url).expect("AST should still be cached");
+        let exported: Vec<String> = ast.all_l_symbols().map(|s| s.token.text.clone()).collect();
+        assert!(
+            exported.contains(&"renamed-fn".to_string()),
+            "stale AST: expected renamed-fn, got {exported:?}"
+        );
+        assert!(
+            !exported.contains(&"original-name".to_string()),
+            "stale symbol still present: {exported:?}"
+        );
+    }
+
+    /// An unchanged file must not be needlessly re-parsed or republished.
+    #[tokio::test]
+    async fn test_reindex_from_disk_is_noop_when_unchanged() {
+        let harness = TestHarness::with_temp_dir();
+        let (_path, lib_url) = harness.write_file("src/lib.fnl", "(fn f [] 1)\n");
+
+        harness.initialize().await.unwrap();
+
+        let changed = harness.backend.reindex_from_disk(&lib_url).await;
+        assert!(!changed, "unchanged file should report no change");
+    }
+
+    /// A deleted file must be evicted, not left behind as a stale entry.
+    #[tokio::test]
+    async fn test_reindex_from_disk_evicts_deleted_file() {
+        let harness = TestHarness::with_temp_dir();
+        let (path, lib_url) = harness.write_file("src/gone.fnl", "(fn f [] 1)\n");
+
+        harness.initialize().await.unwrap();
+        assert!(harness.backend.ast_map.get(&lib_url).is_some());
+
+        std::fs::remove_file(&path).unwrap();
+
+        let changed = harness.backend.reindex_from_disk(&lib_url).await;
+        assert!(changed, "deleting a cached file should report a change");
+        assert!(
+            harness.backend.ast_map.get(&lib_url).is_none(),
+            "deleted file should be evicted from the AST cache"
+        );
+        assert!(harness.backend.doc_map.get(&lib_url).is_none());
+    }
+
+    /// Open buffers are the editor's source of truth; a disk notification must
+    /// never clobber unsaved edits by re-reading the file.
+    #[tokio::test]
+    async fn test_watched_files_skips_open_buffers() {
+        let mut harness = TestHarness::with_temp_dir();
+        let (path, lib_url) = harness.write_file("src/lib.fnl", "(fn on-disk [] 1)\n");
+
+        // Open with buffer content that differs from disk (unsaved edits).
+        let open_url = harness.write_and_open_file("src/lib.fnl", "(fn unsaved-edit [] 2)\n");
+        assert_eq!(open_url, lib_url);
+
+        // Now make disk disagree with the open buffer, as an external
+        // `git checkout` or formatter would.
+        std::fs::write(&path, "(fn written-by-someone-else [] 3)\n").unwrap();
+
+        harness
+            .backend
+            .did_change_watched_files(DidChangeWatchedFilesParams {
+                changes: vec![FileEvent { uri: lib_url.clone(), typ: FileChangeType::CHANGED }],
+            })
+            .await;
+
+        let cached = harness.backend.doc_map.get(&lib_url).expect("buffer should stay cached");
+        assert_eq!(
+            cached.to_string(),
+            "(fn unsaved-edit [] 2)\n",
+            "unsaved buffer was clobbered by a disk re-read"
+        );
+
+        // And the on-disk file really did differ from the buffer.
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), cached.to_string());
+    }
+
+    /// `DELETED` events must evict the cached entry, not leave a stale AST
+    /// that still resolves.
+    #[tokio::test]
+    async fn test_watched_files_delete_evicts_entry() {
+        let harness = TestHarness::with_temp_dir();
+        let (path, lib_url) = harness.write_file("src/lib.fnl", "(fn f [] 1)\n");
+
+        harness.initialize().await.unwrap();
+        assert!(harness.backend.ast_map.get(&lib_url).is_some());
+
+        std::fs::remove_file(&path).unwrap();
+
+        harness
+            .backend
+            .did_change_watched_files(DidChangeWatchedFilesParams {
+                changes: vec![FileEvent { uri: lib_url.clone(), typ: FileChangeType::DELETED }],
+            })
+            .await;
+
+        assert!(harness.backend.ast_map.get(&lib_url).is_none());
+        assert!(harness.backend.doc_map.get(&lib_url).is_none());
+    }
+
     #[tokio::test]
     async fn test_auto_import_completion() {
         let mut harness = TestHarness::with_temp_dir();

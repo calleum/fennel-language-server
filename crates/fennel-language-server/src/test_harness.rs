@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use ropey::Rope;
 use tempfile::TempDir;
 use tower_lsp::{LanguageServer, jsonrpc::Result, lsp_types::*};
@@ -38,11 +38,13 @@ impl TestHarness {
             client,
             doc_map: DashMap::new(),
             ast_map: DashMap::new(),
+            open_docs: DashSet::new(),
             workspace_map: DashMap::new(),
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(Configuration::default())),
             std_ast,
             std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
+            client_caps: Arc::new(RwLock::new(ClientCapabilities::default())),
         });
 
         Self { backend: service.inner().clone(), temp_dir: None }
@@ -86,6 +88,7 @@ impl TestHarness {
     pub fn write_and_open_file(&mut self, rel_path: &str, content: &str) -> Url {
         let (_path, url) = self.write_file(rel_path, content);
         self.backend.doc_map.insert(url.clone(), Rope::from_str(content));
+        self.backend.open_docs.insert(url.clone());
         let globals = self.backend.collect_globals();
         let ast = fennel_parser::parse(content.chars(), globals);
         self.backend.ast_map.insert(url.clone(), ast);

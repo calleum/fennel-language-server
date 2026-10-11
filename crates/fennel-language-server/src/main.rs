@@ -18,7 +18,7 @@ use std::{
 };
 
 use clap::Parser;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use fennel_parser::{Ast, SyntaxKind, SyntaxNode, SyntaxToken, models};
 use helper::*;
 use ropey::Rope;
@@ -43,11 +43,19 @@ struct Backend {
     config: Arc<RwLock<config::Configuration>>,
     doc_map: DashMap<Url, Rope>,
     ast_map: DashMap<Url, Ast>,
+    /// URIs the editor currently has open. `doc_map` also holds files read from
+    /// disk by background indexing, so it cannot distinguish open buffers from
+    /// indexed ones on its own — this set can.
+    open_docs: DashSet<Url>,
     workspace_map: DashMap<Url, String>,
     // publish those after saving
     on_save_or_open_errors: DashMap<Url, Vec<fennel_parser::Error>>,
     std_ast: Ast,
     std_uri: Url,
+    /// Captured from `initialize`; `InitializedParams` carries nothing, so the
+    /// client capabilities have to be retained to register file watchers later.
+    /// Interior mutability because `initialize` takes `&self`.
+    client_caps: Arc<RwLock<ClientCapabilities>>,
 }
 
 #[tower_lsp::async_trait]
@@ -66,6 +74,8 @@ impl tower_lsp::LanguageServer for Backend {
         {
             *self.config.write().map_err(|_err| Error::internal_error())? = config;
         }
+
+        *self.client_caps.write().map_err(|_err| Error::internal_error())? = params.capabilities;
 
         // Workspace indexing is deliberately deferred to `initialized` so this
         // handler returns promptly; clients time out slow `initialize` calls.
@@ -1827,6 +1837,7 @@ impl tower_lsp::LanguageServer for Backend {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
+        self.register_file_watchers().await;
         let folders: Vec<Url> = self.workspace_map.iter().map(|r| r.key().clone()).collect();
         for fol in folders {
             self.index_workspace_folder(&fol).await;
@@ -1853,6 +1864,7 @@ impl tower_lsp::LanguageServer for Backend {
 
         let doc = ropey::Rope::from_str(&text);
         self.doc_map.insert(uri.clone(), doc.clone());
+        self.open_docs.insert(uri.clone());
 
         let globals = self.collect_globals();
         let ast = fennel_parser::parse(text.chars(), globals);
@@ -1912,6 +1924,37 @@ impl tower_lsp::LanguageServer for Backend {
         drop(doc);
         drop(ast);
         self.client.publish_diagnostics(uri, diagnostics, None).await;
+    }
+
+    /// Re-index files that changed on disk.
+    ///
+    /// Without this, `ast_map` entries for workspace files are only ever written by
+    /// `did_open`/`did_change`, so a file edited outside the editor keeps serving a
+    /// stale AST to goto-definition, references, and rename.
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        for change in params.changes {
+            // Skip open buffers: the editor is the source of truth for those, and
+            // re-reading from disk would clobber unsaved edits.
+            //
+            // `doc_map` cannot answer this on its own — background indexing stores
+            // disk-read files there too — so `open_docs` tracks real editor buffers.
+            if self.open_docs.contains(&change.uri) {
+                continue;
+            }
+
+            match change.typ {
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    self.reindex_from_disk(&change.uri).await;
+                }
+                FileChangeType::DELETED => {
+                    // Drop the cached entry so the file stops resolving at all.
+                    self.ast_map.remove(&change.uri);
+                    self.doc_map.remove(&change.uri);
+                    self.on_save_or_open_errors.remove(&change.uri);
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -2038,6 +2081,95 @@ impl Backend {
             .or_else(|| file_path.file_stem().map(|s| s.to_string_lossy().to_string()))
     }
 
+    /// Ask the client to watch `**/*.fnl` so we learn about edits made outside
+    /// the editor.
+    ///
+    /// lsp-types 0.94 exposes no `ServerCapabilities` field for watched files,
+    /// so this has to be registered dynamically. Clients that don't advertise
+    /// `didChangeWatchedFiles` dynamic registration simply never send the
+    /// notification, and behaviour degrades to the previous open-buffer-only
+    /// caching rather than erroring.
+    pub(crate) async fn register_file_watchers(&self) {
+        let dynamic_ok = self
+            .client_caps
+            .read()
+            .ok()
+            .and_then(|caps| {
+                caps.workspace
+                    .as_ref()
+                    .and_then(|w| w.did_change_watched_files.as_ref())
+                    .and_then(|d| d.dynamic_registration)
+            })
+            .unwrap_or(false);
+
+        if !dynamic_ok {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    "client does not support dynamic file watching; workspace files \
+                     only refresh when opened in the editor",
+                )
+                .await;
+            return;
+        }
+
+        let options = DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.fnl".to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            }],
+        };
+
+        let register_options = serde_json::to_value(options).unwrap_or(serde_json::Value::Null);
+
+        if let Err(e) = self
+            .client
+            .register_capability(vec![Registration {
+                id: "fennel-workspace-fnl-watcher".to_string(),
+                method: "workspace/didChangeWatchedFiles".to_string(),
+                register_options: Some(register_options),
+            }])
+            .await
+        {
+            self.client
+                .log_message(MessageType::ERROR, format!("failed to register file watcher: {e}"))
+                .await;
+        }
+    }
+
+    /// Re-reads `uri` from disk and replaces any cached AST/document.
+    ///
+    /// Returns `true` when the cached entry actually changed. Files that vanished
+    /// or became unreadable have their entries dropped so the cache cannot serve a
+    /// stale copy forever.
+    pub(crate) async fn reindex_from_disk(&self, uri: &Url) -> bool {
+        let Some(file_path) = uri.to_file_path().ok() else {
+            return false;
+        };
+
+        let Ok(text) = std::fs::read_to_string(&file_path) else {
+            // Deleted or unreadable: drop whatever we cached. Both maps must be
+            // cleared — a short-circuiting `||` would skip the second removal.
+            let had_ast = self.ast_map.remove(uri).is_some();
+            let had_doc = self.doc_map.remove(uri).is_some();
+            self.on_save_or_open_errors.remove(uri);
+            return had_ast || had_doc;
+        };
+
+        // Nothing to do if the on-disk contents match what we already hold.
+        if let Some(cached) = self.doc_map.get(uri)
+            && cached.to_string() == text
+        {
+            return false;
+        }
+
+        let globals = self.collect_globals();
+        let ast = fennel_parser::parse(text.chars(), globals);
+        self.ast_map.insert(uri.clone(), ast);
+        self.doc_map.insert(uri.clone(), Rope::from_str(&text));
+        true
+    }
+
     pub(crate) async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
         if let Some(ast) = self.ast_map.get(uri) {
             return Some(ast.clone());
@@ -2113,6 +2245,7 @@ impl Backend {
     }
 
     fn free_doc(&self, uri: &Url) {
+        self.open_docs.remove(uri);
         self.doc_map.remove(uri);
         self.ast_map.remove(uri);
         self.on_save_or_open_errors.remove(uri);
@@ -2516,11 +2649,13 @@ async fn main() {
         client,
         doc_map,
         ast_map: DashMap::new(),
+        open_docs: DashSet::new(),
         workspace_map: DashMap::new(),
         on_save_or_open_errors: DashMap::new(),
         config: Arc::new(RwLock::new(config::Configuration::default())),
         std_ast,
         std_uri,
+        client_caps: Arc::new(RwLock::new(ClientCapabilities::default())),
     })
     .finish();
 
