@@ -25,11 +25,7 @@ pub async fn setup_backend(code: &str) -> (Backend, Url) {
     let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
 
     backend.doc_map.insert(uri.clone(), Rope::from_str(code));
-    let mut globals = HashSet::new();
-    let (std_symbols, _, _, _) = backend.std_ast.completion(backend.std_ast.end_offset(), None);
-    for sym in std_symbols {
-        globals.insert(sym.token.text.clone());
-    }
+    let globals = backend.collect_globals();
     let ast = fennel_parser::parse(code.chars(), globals);
     backend.ast_map.insert(uri.clone(), ast);
 

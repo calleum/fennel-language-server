@@ -954,24 +954,7 @@ impl tower_lsp::LanguageServer for Backend {
         let doc = ropey::Rope::from_str(&text);
         self.doc_map.insert(uri.clone(), doc.clone());
 
-        let mut globals = HashSet::new();
-        for global in &self
-            .config
-            .read()
-            .expect("config lock should not be poisoned")
-            .fennel
-            .diagnostics
-            .globals
-        {
-            globals.insert(global.clone());
-        }
-
-        // Add stubs to globals to suppress errors
-        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-        for sym in std_symbols {
-            globals.insert(sym.token.text.clone());
-        }
-
+        let globals = self.collect_globals();
         let ast = fennel_parser::parse(text.chars(), globals);
         self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), true).await;
 
@@ -1002,24 +985,7 @@ impl tower_lsp::LanguageServer for Backend {
             }
         });
 
-        let mut globals = HashSet::new();
-        for global in &self
-            .config
-            .read()
-            .expect("config lock should not be poisoned")
-            .fennel
-            .diagnostics
-            .globals
-        {
-            globals.insert(global.clone());
-        }
-
-        // Add stubs to globals to suppress errors
-        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-        for sym in std_symbols {
-            globals.insert(sym.token.text.clone());
-        }
-
+        let globals = self.collect_globals();
         let ast = fennel_parser::parse(doc.chars(), globals);
         self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), false).await;
 
@@ -1056,15 +1022,7 @@ impl tower_lsp::LanguageServer for Backend {
             Ok(config) => {
                 *self.config.write().expect("config lock should not be poisoned") = config.clone();
 
-                let mut globals = HashSet::new();
-                for global in &config.fennel.diagnostics.globals {
-                    globals.insert(global.clone());
-                }
-                let (std_symbols, _, _, _) =
-                    self.std_ast.completion(self.std_ast.end_offset(), None);
-                for sym in std_symbols {
-                    globals.insert(sym.token.text.clone());
-                }
+                let globals = self.collect_globals();
 
                 for mut r in self.ast_map.iter_mut() {
                     let ast = r.value_mut();
@@ -1085,27 +1043,26 @@ impl tower_lsp::LanguageServer for Backend {
 }
 
 impl Backend {
+    pub(crate) fn collect_globals(&self) -> HashSet<String> {
+        let mut globals = HashSet::new();
+        if let Ok(config) = self.config.read() {
+            for global in &config.fennel.diagnostics.globals {
+                globals.insert(global.clone());
+            }
+        }
+        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
+        for sym in std_symbols {
+            globals.insert(sym.token.text.clone());
+        }
+        globals
+    }
+
     async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
         if let Some(ast) = self.ast_map.get(uri) {
             return Some(ast.clone());
         }
         if let Ok(text) = std::fs::read_to_string(uri.path()) {
-            let mut globals = HashSet::new();
-            for global in &self
-                .config
-                .read()
-                .expect("config lock should not be poisoned")
-                .fennel
-                .diagnostics
-                .globals
-            {
-                globals.insert(global.clone());
-            }
-            let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-            for sym in std_symbols {
-                globals.insert(sym.token.text.clone());
-            }
-
+            let globals = self.collect_globals();
             let ast = fennel_parser::parse(text.chars(), globals);
             self.ast_map.insert(uri.clone(), ast.clone());
 
