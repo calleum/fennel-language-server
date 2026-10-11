@@ -1546,11 +1546,8 @@ impl Backend {
             (s, true)
         } else {
             let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-            if let Some(s) = std_symbols.into_iter().find(|s| s.token.text == callee_name) {
-                (s.clone(), true)
-            } else {
-                return None;
-            }
+            let s = std_symbols.into_iter().find(|s| s.token.text == callee_name)?;
+            (s.clone(), true)
         };
 
         let (def_ast, def_root) = if is_std {

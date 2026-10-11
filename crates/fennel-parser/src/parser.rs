@@ -772,6 +772,7 @@ impl<'p> Parser<'p> {
         } else {
             self.errors.push(Error::new(text_range(&cur_token.range), Unexpected(cur_token.kind)));
             self.step();
+            self.synchronize();
         }
     }
 
@@ -801,16 +802,62 @@ impl<'p> Parser<'p> {
     }
 
     fn missing_close(&mut self, cur_token: Token) {
+        let mut reported_dismatched = false;
         while let Some(rule) = self.rule_stack.pop() {
             if let Rule { notation: Close(range), .. } = rule {
                 self.builder.finish_node();
-                if let Some(range) = range {
-                    self.errors.push(Error::new(range, Dismatched))
+                if let Some(range) = range
+                    && !reported_dismatched
+                {
+                    self.errors.push(Error::new(range, Dismatched));
+                    reported_dismatched = true;
                 }
             }
         }
-        self.errors
-            .push(Error::new(text_range_with_offset(&cur_token.range, (-1, -1)), UnexpectedEof));
+        if !reported_dismatched {
+            self.errors.push(Error::new(
+                text_range_with_offset(&cur_token.range, (-1, -1)),
+                UnexpectedEof,
+            ));
+        }
+    }
+
+    fn synchronize(&mut self) {
+        if self.cur_rule().expect != R_PAREN {
+            return;
+        }
+
+        let mut depth: usize = 0;
+        while !self.token_queue.is_empty() {
+            let tok = self.lookahead().to_owned();
+            if tok.kind == END {
+                break;
+            }
+            if tok.kind == WHITESPACE || tok.kind == COMMENT {
+                self.eat(&tok, false);
+                continue;
+            }
+            if tok.kind == L_PAREN || tok.kind == L_BRACKET || tok.kind == L_BRACE {
+                depth += 1;
+                self.builder.token(ERROR.into(), &tok.text);
+                self.step();
+            } else if tok.kind == R_PAREN {
+                if depth > 0 {
+                    depth -= 1;
+                    self.builder.token(ERROR.into(), &tok.text);
+                    self.step();
+                } else {
+                    break;
+                }
+            } else if tok.kind == R_BRACKET || tok.kind == R_BRACE {
+                depth = depth.saturating_sub(1);
+                self.builder.token(ERROR.into(), &tok.text);
+                self.step();
+            } else {
+                self.builder.token(ERROR.into(), &tok.text);
+                self.step();
+            }
+        }
     }
 
     fn parse_symbol(&mut self, cur_token: Token) {
@@ -976,12 +1023,26 @@ mod tests {
         let text = "(x";
         let parser = Parser::new(text.chars());
         let parsed = parser.parse();
+        assert_eq!(parsed.errors, vec![Error::new(TextRange::new(0.into(), 1.into()), Dismatched)]);
+    }
+
+    #[test]
+    fn test_error_recovery_missing_closing_paren() {
+        let text = "(fn foo [a b] (print a";
+        let parser = Parser::new(text.chars());
+        let parsed = parser.parse();
         assert_eq!(
             parsed.errors,
-            vec![
-                Error::new(TextRange::new(0.into(), 1.into()), Dismatched),
-                Error::new(TextRange::new(1.into(), 1.into()), UnexpectedEof),
-            ]
+            vec![Error::new(TextRange::new(14.into(), 15.into()), Dismatched)]
         );
+    }
+
+    #[test]
+    fn test_error_recovery_synchronize_unexpected_tokens() {
+        let text = "(local x 1 2 3 4 5)\n(local y 6)";
+        let parser = Parser::new(text.chars());
+        let parsed = parser.parse();
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].kind, Unexpected(INTEGER));
     }
 }

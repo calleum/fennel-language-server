@@ -1172,6 +1172,23 @@ mod tests {
     }
 
     #[test]
+    fn test_error_recovery_ast() {
+        let mut globals = HashSet::new();
+        globals.insert("print".to_string());
+        let text = "(fn foo [a b] (print a";
+        let ast = parse(text.chars(), globals);
+        // Only one error (the dismatched closing paren), not a cascade
+        assert_eq!(ast.errors().count(), 1);
+        let err = ast.errors().next().unwrap();
+        assert_eq!(err.kind, Dismatched);
+
+        // Symbols foo, a, b are all recognized in the AST
+        assert!(ast.all_l_symbols().any(|s| s.token.text == "foo"));
+        assert!(ast.all_l_symbols().any(|s| s.token.text == "a"));
+        assert!(ast.all_l_symbols().any(|s| s.token.text == "b"));
+    }
+
+    #[test]
     fn definition_empty() {
         let text = "(local z 1)(print z)";
         assert_eq!(
