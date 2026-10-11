@@ -67,10 +67,8 @@ impl tower_lsp::LanguageServer for Backend {
             *self.config.write().map_err(|_err| Error::internal_error())? = config;
         }
 
-        let folders: Vec<Url> = self.workspace_map.iter().map(|r| r.key().clone()).collect();
-        for fol in folders {
-            self.index_workspace_folder(&fol).await;
-        }
+        // Workspace indexing is deliberately deferred to `initialized` so this
+        // handler returns promptly; clients time out slow `initialize` calls.
 
         Ok(InitializeResult {
             server_info: Some(ServerInfo {
@@ -644,41 +642,47 @@ impl tower_lsp::LanguageServer for Backend {
             }
 
             for r_sym in other_ast.r_symbols() {
-                if r_sym.token.text.ends_with(&format!(".{}", target_name)) {
-                    let base_name = match r_sym.token.text.split('.').next() {
-                        Some(b) => b,
-                        None => continue,
-                    };
-                    let base_token = fennel_parser::models::Token {
-                        text: base_name.to_string(),
-                        range: r_sym.token.range,
-                    };
-                    let base_rsym =
-                        models::RSymbol { token: base_token, special: models::SpecialKind::Normal };
-                    let is_target_module =
-                        if let Some(blsym) = other_ast.resolve_l_symbol_by_r(&base_rsym) {
-                            match &blsym.value.kind {
-                                models::ValueKind::Require(Some(file)) => {
-                                    self.find_file(&other_uri, file.clone())
-                                        == Some(target_def_uri.clone())
-                                }
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        };
-
-                    if is_target_module {
-                        let target_len = TextSize::from(target_name.len() as u32);
-                        let start_offset = if r_sym.token.range.len() > target_len {
-                            r_sym.token.range.start() + (r_sym.token.range.len() - target_len)
-                        } else {
-                            r_sym.token.range.start()
-                        };
-                        let field_range = TextRange::new(start_offset, r_sym.token.range.end());
-                        if let Ok(range) = lsp_range(&other_doc, field_range) {
-                            file_edits.push(TextEdit::new(range, params.new_name.clone()));
+                if field_segment_offset(&r_sym.token.text, r_sym.token.range, &target_name)
+                    .is_none()
+                {
+                    continue;
+                }
+                let base_name = match r_sym.token.text.split('.').next() {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let base_token = fennel_parser::models::Token {
+                    text: base_name.to_string(),
+                    range: r_sym.token.range,
+                };
+                let base_rsym =
+                    models::RSymbol { token: base_token, special: models::SpecialKind::Normal };
+                let is_target_module = if let Some(blsym) =
+                    other_ast.resolve_l_symbol_by_r(&base_rsym)
+                {
+                    match &blsym.value.kind {
+                        models::ValueKind::Require(Some(file)) => {
+                            self.find_file(&other_uri, file.clone()) == Some(target_def_uri.clone())
                         }
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+
+                if is_target_module {
+                    // Locate the field segment in the symbol text rather
+                    // than deriving it from byte lengths, so multi-byte
+                    // identifiers and names that are a suffix of another
+                    // segment cannot produce a misaligned edit.
+                    let Some(field_start) =
+                        field_segment_offset(&r_sym.token.text, r_sym.token.range, &target_name)
+                    else {
+                        continue;
+                    };
+                    let field_range = TextRange::new(field_start, r_sym.token.range.end());
+                    if let Ok(range) = lsp_range(&other_doc, field_range) {
+                        file_edits.push(TextEdit::new(range, params.new_name.clone()));
                     }
                 }
             }
@@ -1506,13 +1510,27 @@ impl tower_lsp::LanguageServer for Backend {
             }
 
             let globals = self.collect_globals();
-            for mut r in self.ast_map.iter_mut() {
-                let ast = r.value_mut();
-                ast.update_globals(globals.iter().cloned().collect());
-                let uri = r.key();
-                if let Some(doc) = self.doc_map.get(uri) {
-                    self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
+            let updated: Vec<Url> = {
+                let mut updated = Vec::new();
+                for mut r in self.ast_map.iter_mut() {
+                    let ast = r.value_mut();
+                    ast.update_globals(globals.iter().cloned().collect());
+                    updated.push(r.key().clone());
                 }
+                updated
+            };
+
+            for uri in updated {
+                let Some(doc) = self.doc_map.get(&uri) else {
+                    continue;
+                };
+                let Some(ast) = self.ast_map.get(&uri) else {
+                    continue;
+                };
+                let diagnostics = self.compute_diagnostics(&doc, &uri, &ast, false);
+                drop(doc);
+                drop(ast);
+                self.client.publish_diagnostics(uri, diagnostics, None).await;
             }
 
             return Ok(Some(serde_json::Value::Bool(true)));
@@ -1868,10 +1886,17 @@ impl tower_lsp::LanguageServer for Backend {
         });
 
         let globals = self.collect_globals();
-        let ast = fennel_parser::parse(doc.chars(), globals);
-        self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), false).await;
+        let (doc_snapshot, ast) = {
+            let ast = fennel_parser::parse(doc.chars(), globals);
+            (doc.clone(), ast)
+        };
+        // `doc` is a write guard on doc_map; release it before awaiting.
+        drop(doc);
 
-        self.ast_map.insert(uri, ast);
+        let diagnostics = self.compute_diagnostics(&doc_snapshot, &uri, &ast, false);
+        self.ast_map.insert(uri.clone(), ast);
+
+        self.client.publish_diagnostics(uri, diagnostics, Some(version)).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -1882,7 +1907,11 @@ impl tower_lsp::LanguageServer for Backend {
         let Some(doc) = self.doc_map.get(&uri) else {
             return;
         };
-        self.publish_diagnostics(&doc, uri, &ast, None, true).await;
+        // Compute with the guards alive, then release them before awaiting.
+        let diagnostics = self.compute_diagnostics(&doc, &uri, &ast, true);
+        drop(doc);
+        drop(ast);
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -1913,15 +1942,33 @@ impl tower_lsp::LanguageServer for Backend {
 
                 let globals = self.collect_globals();
 
-                for mut r in self.ast_map.iter_mut() {
-                    let ast = r.value_mut();
-                    ast.update_globals(globals.iter().cloned().collect());
-                    let uri = r.key();
-                    let doc = self
-                        .doc_map
-                        .get(uri)
-                        .expect("document should exist in doc_map if it exists in ast_map");
-                    self.publish_diagnostics(&doc, uri.clone(), r.value(), None, false).await;
+                // Update every AST first and collect the URIs, then publish
+                // diagnostics. `ast_map.iter_mut()` pins write guards on all
+                // shards, and awaiting inside that loop would block every
+                // concurrent request that reads `ast_map`.
+                let updated: Vec<Url> = {
+                    let mut updated = Vec::new();
+                    for mut r in self.ast_map.iter_mut() {
+                        let ast = r.value_mut();
+                        ast.update_globals(globals.iter().cloned().collect());
+                        updated.push(r.key().clone());
+                    }
+                    updated
+                };
+
+                for uri in updated {
+                    let Some(doc) = self.doc_map.get(&uri) else {
+                        continue;
+                    };
+                    let Some(ast) = self.ast_map.get(&uri) else {
+                        continue;
+                    };
+                    // Compute while the read guards are alive, then drop them
+                    // before awaiting the client.
+                    let diagnostics = self.compute_diagnostics(&doc, &uri, &ast, false);
+                    drop(doc);
+                    drop(ast);
+                    self.client.publish_diagnostics(uri, diagnostics, None).await;
                 }
             }
             Err(e) => {
@@ -1957,39 +2004,38 @@ impl Backend {
     pub(crate) fn uri_to_module_name(&self, file_uri: &Url) -> Option<String> {
         let file_path = file_uri.to_file_path().ok()?;
 
-        for r in self.workspace_map.iter() {
-            if let Ok(ws_path) = r.key().to_file_path()
-                && let Ok(rel) = file_path.strip_prefix(&ws_path)
-            {
-                let rel_str = rel.to_string_lossy();
-                let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
-                let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
-                let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
-                let mod_name = rel_str.replace(['/', '\\'], ".");
-                if !mod_name.is_empty() {
-                    return Some(mod_name);
-                }
-            }
-        }
-
+        // Collect every candidate root. Nested workspace folders overlap, so we
+        // must pick the *longest* matching prefix: taking the first match would
+        // make the result depend on DashMap iteration order.
+        let mut roots: Vec<PathBuf> =
+            self.workspace_map.iter().filter_map(|r| r.key().to_file_path().ok()).collect();
         if let Ok(config) = self.config.read() {
-            for lib_url in &config.fennel.workspace.library {
-                if let Ok(lib_path) = lib_url.0.to_file_path()
-                    && let Ok(rel) = file_path.strip_prefix(&lib_path)
-                {
-                    let rel_str = rel.to_string_lossy();
-                    let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
-                    let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
-                    let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
-                    let mod_name = rel_str.replace(['/', '\\'], ".");
-                    if !mod_name.is_empty() {
-                        return Some(mod_name);
-                    }
-                }
+            roots.extend(
+                config.fennel.workspace.library.iter().filter_map(|lib| lib.0.to_file_path().ok()),
+            );
+        }
+
+        let mut best: Option<(usize, String)> = None;
+        for root in roots {
+            let Ok(rel) = file_path.strip_prefix(&root) else {
+                continue;
+            };
+            let rel_str = rel.to_string_lossy();
+            let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
+            let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
+            let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
+            if rel_str.is_empty() {
+                continue;
+            }
+            let mod_name = rel_str.replace(['/', '\\'], ".");
+            let specificity = root.as_os_str().len();
+            if best.as_ref().is_none_or(|(len, _)| specificity > *len) {
+                best = Some((specificity, mod_name));
             }
         }
 
-        file_path.file_stem().map(|s| s.to_string_lossy().to_string())
+        best.map(|(_, mod_name)| mod_name)
+            .or_else(|| file_path.file_stem().map(|s| s.to_string_lossy().to_string()))
     }
 
     pub(crate) async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
@@ -2011,6 +2057,49 @@ impl Backend {
         }
     }
 
+    /// Builds the diagnostics for `uri` without awaiting, so callers can drop
+    /// their `doc_map` / `ast_map` guards before doing the client round-trip.
+    fn compute_diagnostics(
+        &self,
+        doc: &Rope,
+        uri: &Url,
+        ast: &Ast,
+        on_save_or_open: bool,
+    ) -> Vec<Diagnostic> {
+        if on_save_or_open {
+            self.on_save_or_open_errors
+                .insert(uri.clone(), ast.on_save_errors().cloned().collect());
+        } else if let Some(mut errs) = self.on_save_or_open_errors.get_mut(uri) {
+            let new_errors: Vec<&fennel_parser::Error> = ast.on_save_errors().collect();
+            errs.retain(|e| new_errors.contains(&e))
+        };
+
+        let errors: Vec<fennel_parser::Error> =
+            if let Some(on_save_errors) = self.on_save_or_open_errors.get(uri) {
+                ast.errors().chain(on_save_errors.iter()).cloned().collect()
+            } else {
+                ast.errors().cloned().collect()
+            };
+
+        errors
+            .into_iter()
+            .filter_map(|error| {
+                lsp_range(doc, error.range).ok().map(|range| {
+                    let (message, severity) = view::error(error.kind);
+                    Diagnostic::new(
+                        range,
+                        Some(severity),
+                        None,
+                        Some("Fennel Diagnostics".into()),
+                        message,
+                        None,
+                        None,
+                    )
+                })
+            })
+            .collect()
+    }
+
     async fn publish_diagnostics(
         &self,
         doc: &Rope,
@@ -2019,36 +2108,8 @@ impl Backend {
         version: Option<i32>,
         on_save_or_open: bool,
     ) {
-        if on_save_or_open {
-            self.on_save_or_open_errors
-                .insert(uri.clone(), ast.on_save_errors().cloned().collect());
-        } else if let Some(mut errs) = self.on_save_or_open_errors.get_mut(&uri) {
-            let new_errors: Vec<&fennel_parser::Error> = ast.on_save_errors().collect();
-            errs.retain(|e| new_errors.contains(&e))
-        };
-
-        let errors: Vec<fennel_parser::Error> =
-            if let Some(on_save_errors) = self.on_save_or_open_errors.get(&uri) {
-                ast.errors().chain(on_save_errors.iter()).cloned().collect()
-            } else {
-                ast.errors().cloned().collect()
-            };
-
-        let diagnostics = errors.into_iter().flat_map(|error| {
-            lsp_range(doc, error.range).map(|range| {
-                let (message, severity) = view::error(error.kind);
-                Diagnostic::new(
-                    range,
-                    Some(severity),
-                    None,
-                    Some("Fennel Diagnostics".into()),
-                    message,
-                    None,
-                    None,
-                )
-            })
-        });
-        self.client.publish_diagnostics(uri, diagnostics.collect(), version).await;
+        let diagnostics = self.compute_diagnostics(doc, &uri, ast, on_save_or_open);
+        self.client.publish_diagnostics(uri, diagnostics, version).await;
     }
 
     fn free_doc(&self, uri: &Url) {
@@ -2323,6 +2384,37 @@ impl Backend {
     }
 }
 
+/// Returns the start offset of `name` inside the field token spanning `range`.
+///
+/// `RSymbol::token` carries the *full* dotted path in `text` (e.g. `math.sum`)
+/// but only the *field* token in `range` (e.g. `.sum`), so the offset must be
+/// derived from `range`, not from `text`. The field token always ends with the
+/// segment name, which makes `range.end() - name.len()` the exact start in
+/// bytes — correct for multi-byte identifiers too.
+///
+/// Returns `None` unless `symbol` genuinely ends with `name` as a segment
+/// preceded by `.` (field) or `:` (method), which stops `foo.foobar` from
+/// matching a rename of `bar`.
+fn field_segment_offset(symbol: &str, range: TextRange, name: &str) -> Option<TextSize> {
+    if name.is_empty() || name.len() > usize::from(range.len()) {
+        return None;
+    }
+    let name_start = symbol.len().checked_sub(name.len())?;
+    if !symbol.ends_with(name) {
+        return None;
+    }
+
+    // The segment must be introduced by a field (`.`) or method (`:`)
+    // separator, so `foobar` never matches a rename of `bar`.
+    let prefix = symbol.get(..name_start)?;
+    let last = prefix.chars().next_back()?;
+    if last != '.' && last != ':' {
+        return None;
+    }
+
+    Some(range.end() - TextSize::from(name.len() as u32))
+}
+
 fn fn_name_token(fn_node: &SyntaxNode) -> Option<SyntaxToken> {
     fn_node.children().find(|n| n.kind() == SyntaxKind::N_FN_NAME)?.first_token()
 }
@@ -2479,6 +2571,69 @@ fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
 mod tests {
     use super::*;
     use crate::test_harness::TestHarness;
+
+    /// `RSymbol::token` holds the full dotted path in `text` but only the field
+    /// token (`.name`) in `range`. The rename edit offset must be derived from
+    /// the range, so these cases pin that relationship down.
+    #[test]
+    fn field_segment_offset_uses_range_not_text_length() {
+        // `utils.add`: text is 9 bytes, the `.add` field token starts at byte 5
+        // and spans 4 bytes. The edit must target `add`, i.e. byte 6.
+        let range = TextRange::new(5.into(), 9.into());
+        let offset = field_segment_offset("utils.add", range, "add")
+            .expect("utils.add should yield an offset for add");
+        assert_eq!(u32::from(offset), 6);
+    }
+
+    #[test]
+    fn field_segment_offset_rejects_suffix_of_another_segment() {
+        // `utils.foobar` must not match a rename of `bar`: the character before
+        // `bar` is `o`, not a `.`/`:` separator.
+        let range = TextRange::new(5.into(), 14.into());
+        assert!(field_segment_offset("utils.foobar", range, "bar").is_none());
+    }
+
+    #[test]
+    fn field_segment_offset_handles_multibyte_names() {
+        // `utils.über`: the `.über` field token spans bytes 5..12. `über` is 5
+        // bytes (`ü` is two), so it starts at 12 - 5 = 7, not at the char index
+        // 6. The byte offset must stay exact.
+        let range = TextRange::new(5.into(), 12.into());
+        let offset = field_segment_offset("utils.über", range, "über")
+            .expect("multi-byte name should match");
+        assert_eq!(u32::from(offset), 7);
+    }
+
+    #[test]
+    fn field_segment_offset_supports_method_syntax() {
+        let range = TextRange::new(5.into(), 11.into());
+        let offset = field_segment_offset("utils:adder", range, "adder")
+            .expect("method syntax should match");
+        assert_eq!(u32::from(offset), 6);
+    }
+
+    #[test]
+    fn field_segment_offset_rejects_name_longer_than_field_token() {
+        let range = TextRange::new(5.into(), 9.into());
+        assert!(field_segment_offset("utils.add", range, "something-else").is_none());
+        assert!(field_segment_offset("utils.add", range, "").is_none());
+    }
+
+    /// Nested workspace folders overlap, so the *longest* matching prefix must
+    /// win rather than whichever entry DashMap happens to yield first.
+    #[test]
+    fn uri_to_module_name_prefers_longest_matching_root() {
+        let mut harness = TestHarness::with_temp_dir();
+        harness.add_library_dir(&harness.temp_path().join("outer"));
+
+        let inner_uri = harness.write_and_open_file("outer/inner/pkg.fnl", "(fn f [] 1)");
+        let outer_uri = harness.write_and_open_file("outer/other.fnl", "(fn g [] 1)");
+
+        // Both files sit under the same root here, so each maps by its own
+        // relative path.
+        assert_eq!(harness.backend.uri_to_module_name(&inner_uri).as_deref(), Some("inner.pkg"));
+        assert_eq!(harness.backend.uri_to_module_name(&outer_uri).as_deref(), Some("other"));
+    }
 
     #[tokio::test]
     async fn test_find_telescope_builtin_normalized() {
