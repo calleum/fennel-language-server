@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::tdd_helper::setup_backend;
+    use crate::tdd_helper::{STUBS_URI, setup_backend};
     use tower_lsp::LanguageServer;
     use tower_lsp::lsp_types::*;
 
@@ -299,5 +299,87 @@ mod tests {
         assert_eq!(first.name, "compute-sum");
         assert_eq!(first.kind, SymbolKind::FUNCTION);
         assert_eq!(first.location.uri, uri1);
+    }
+
+    #[tokio::test]
+    async fn test_stub_completion_and_goto_definition() {
+        let code = "(string.format \"%s\" \"hi\") (table.insert [] 1)";
+        let (backend, uri) = setup_backend(code).await;
+
+        let def_params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(0, 8),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        let def_resp = backend
+            .goto_definition(def_params)
+            .await
+            .expect("should not error")
+            .expect("should return definition");
+        match def_resp {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert_eq!(loc.uri.as_str(), STUBS_URI);
+            }
+            GotoDefinitionResponse::Array(locs) => {
+                let first = locs.first().expect("should have at least one location");
+                assert_eq!(first.uri.as_str(), STUBS_URI);
+            }
+            GotoDefinitionResponse::Link(_) => panic!("unexpected Link response"),
+        }
+
+        let def_table_params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(0, 35),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        let def_table_resp = backend
+            .goto_definition(def_table_params)
+            .await
+            .expect("should not error")
+            .expect("should return table.insert definition");
+        match def_table_resp {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert_eq!(loc.uri.as_str(), STUBS_URI);
+            }
+            GotoDefinitionResponse::Array(locs) => {
+                let first = locs.first().expect("should have at least one location");
+                assert_eq!(first.uri.as_str(), STUBS_URI);
+            }
+            GotoDefinitionResponse::Link(_) => panic!("unexpected Link response"),
+        }
+
+        let comp_code = "(string.";
+        let (backend_comp, uri_comp) = setup_backend(comp_code).await;
+        let comp_params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri_comp),
+                position: Position::new(0, 8),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: Some(CompletionContext {
+                trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                trigger_character: Some(".".into()),
+            }),
+        };
+        let comp_resp = backend_comp
+            .completion(comp_params)
+            .await
+            .expect("should not error")
+            .expect("should return completion items");
+        let items = match comp_resp {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+        let format_item =
+            items.iter().find(|i| i.label == "format").expect("should contain 'format'");
+        assert!(format_item.detail.as_ref().unwrap().contains("string.format"));
+        assert!(format_item.documentation.is_some());
     }
 }

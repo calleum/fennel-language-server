@@ -375,27 +375,22 @@ impl Binding for Accumulate {
 
 impl Binding for FuncAst {
     fn bindings(&self) -> Option<Vec<models::LSymbol>> {
-        let name = self.name().and_then(|(name_node, is_pure)| {
-            if !is_pure {
-                return None;
-            }
-            Some(models::LSymbol {
-                token: models::Token {
-                    text: name_node.first_token().expect("name node has a token").to_string(),
-                    range: name_node.text_range(),
+        let name = self.name().map(|(name_node, _is_pure)| models::LSymbol {
+            token: models::Token {
+                text: name_node.text().to_string(),
+                range: name_node.text_range(),
+            },
+            scope: models::Scope {
+                kind: match self {
+                    Self::Func(_) => models::ScopeKind::Func,
+                    Self::Lambda(_) => models::ScopeKind::Lambda,
                 },
-                scope: models::Scope {
-                    kind: match self {
-                        Self::Func(_) => models::ScopeKind::Func,
-                        Self::Lambda(_) => models::ScopeKind::Lambda,
-                    },
-                    range: ScopeExtend::Outer.range(&name_node),
-                },
-                value: models::Value {
-                    kind: models::ValueKind::Func,
-                    range: Some(self.syntax().text_range()),
-                },
-            })
+                range: ScopeExtend::Outer.range(&name_node),
+            },
+            value: models::Value {
+                kind: models::ValueKind::Func,
+                range: Some(self.syntax().text_range()),
+            },
         });
 
         let param_nodes = self

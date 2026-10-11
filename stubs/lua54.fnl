@@ -80,133 +80,233 @@
 ;;; Modules
 
 (global coroutine {})
-(fn coroutine.create [f])
-(fn coroutine.isyieldable [])
-(fn coroutine.resume [co & ...])
-(fn coroutine.running [])
-(fn coroutine.status [co])
-(fn coroutine.wrap [f])
-(fn coroutine.yield [& ...])
-(fn coroutine.close [co])
+(fn coroutine.close [co]
+  "Closes coroutine co, closing all its pending to-be-closed variables and putting the coroutine in a dead state.")
+(fn coroutine.create [f]
+  "Creates a new coroutine with body f. Returns this new coroutine, an object with type \"thread\".")
+(fn coroutine.isyieldable [?co]
+  "Returns true when the coroutine co can yield.")
+(fn coroutine.resume [co & ...]
+  "Starts or continues the execution of coroutine co.")
+(fn coroutine.running []
+  "Returns the running coroutine plus a boolean, true when the running coroutine is the main one.")
+(fn coroutine.status [co]
+  "Returns the status of coroutine co, as a string: \"running\", \"suspended\", \"normal\", or \"dead\".")
+(fn coroutine.wrap [f]
+  "Creates a new coroutine with body f; returns a function that resumes the coroutine each time it is called.")
+(fn coroutine.yield [& ...]
+  "Suspends the execution of the calling coroutine.")
 
 (global debug {})
-(fn debug.debug [])
-(fn debug.gethook [?thread])
-(fn debug.getinfo [f ?what])
-(fn debug.getlocal [f local])
-(fn debug.getmetatable [value])
-(fn debug.getregistry [])
-(fn debug.getupvalue [f up])
-(fn debug.getuservalue [u n])
-(fn debug.sethook [hook mask ?count])
-(fn debug.setlocal [level local value])
-(fn debug.setmetatable [value table])
-(fn debug.setupvalue [f up value])
-(fn debug.setuservalue [udata value n])
-(fn debug.traceback [?message ?level])
-(fn debug.upvalueid [f n])
-(fn debug.upvaluejoin [f1 n1 f2 n2])
+(fn debug.debug []
+  "Enters an interactive mode with the user, running each string that the user enters.")
+(fn debug.gethook [?thread]
+  "Returns the current hook settings of the thread.")
+(fn debug.getinfo [f ?what]
+  "Returns a table with information about a function.")
+(fn debug.getlocal [f local]
+  "Returns the name and the value of the local variable with index local of the function or level f.")
+(fn debug.getmetatable [value]
+  "Returns the metatable of the given value or nil if it does not have a metatable.")
+(fn debug.getregistry []
+  "Returns the registry table.")
+(fn debug.getupvalue [f up]
+  "Returns the name and the value of the upvalue with index up of the function f.")
+(fn debug.getuservalue [u ?n]
+  "Returns the n-th user value associated to the userdata u plus a boolean false if the userdata does not have that value.")
+(fn debug.sethook [hook mask ?count]
+  "Sets the given function as a debug hook.")
+(fn debug.setlocal [level local value]
+  "Assigns the value value to the local variable with index local of the function at level level.")
+(fn debug.setmetatable [value table]
+  "Sets the metatable for the given value to the given table (which can be nil).")
+(fn debug.setupvalue [f up value]
+  "Assigns the value value to the upvalue with index up of the function f.")
+(fn debug.setuservalue [udata value ?n]
+  "Sets the given value as the n-th user value associated to the given udata.")
+(fn debug.traceback [?message ?level]
+  "Returns a traceback of the call stack. An optional message string is appended at the beginning of the traceback.")
+(fn debug.upvalueid [f n]
+  "Returns a unique identifier (as a light userdata) for the upvalue numbered n from the given function.")
+(fn debug.upvaluejoin [f1 n1 f2 n2]
+  "Make the n1-th upvalue of the Lua closure f1 refer to the n2-th upvalue of the Lua closure f2.")
 
 (global io {})
-(fn io.close [?file])
-(fn io.flush [])
-(fn io.input [?file])
-(fn io.lines [?filename & ...])
-(fn io.open [filename ?mode])
-(fn io.output [?file])
-(fn io.popen [prog ?mode])
-(fn io.read [& ...])
+(fn io.close [?file]
+  "Equivalent to file:close(). Without a file, closes the default output file.")
+(fn io.flush []
+  "Equivalent to io.output():flush().")
+(fn io.input [?file]
+  "When called with a file name, it opens the named file (in text mode), and sets its handle as the default input file.")
+(fn io.lines [?filename & ...]
+  "Opens the given file name in read mode and returns an iterator function that works like file:lines(...).")
+(fn io.open [filename ?mode]
+  "Opens a file in the given mode. Returns a new file handle, or, in case of errors, nil plus an error message.")
+(fn io.output [?file]
+  "Similar to io.input, but operates on the default output file.")
+(fn io.popen [prog ?mode]
+  "Starts the program prog in a separated process and returns a file handle that you can use to read from or write to this program.")
+(fn io.read [& ...]
+  "Equivalent to io.input():read(...).")
 (global io.stderr {})
 (global io.stdin {})
 (global io.stdout {})
-(fn io.tmpfile [])
-(fn io.type [obj])
-(fn io.write [& ...])
+(fn io.tmpfile []
+  "In case of success, returns a handle for a temporary file opened in update mode.")
+(fn io.type [obj]
+  "Checks whether obj is a valid file handle.")
+(fn io.write [& ...]
+  "Equivalent to io.output():write(...).")
 
 (global math {})
-(fn math.abs [x])
-(fn math.acos [x])
-(fn math.asin [x])
-(fn math.atan [y ?x])
-(fn math.ceil [x])
-(fn math.cos [x])
-(fn math.deg [x])
-(fn math.exp [x])
-(fn math.floor [x])
-(fn math.fmod [x y])
+(fn math.abs [x]
+  "Returns the maximum value between x and -x.")
+(fn math.acos [x]
+  "Returns the arc cosine of x (in radians).")
+(fn math.asin [x]
+  "Returns the arc sine of x (in radians).")
+(fn math.atan [y ?x]
+  "Returns the arc tangent of y/x (in radians).")
+(fn math.ceil [x]
+  "Returns the smallest integral value greater than or equal to x.")
+(fn math.cos [x]
+  "Returns the cosine of x (assumed to be in radians).")
+(fn math.deg [x]
+  "Converts the angle x from radians to degrees.")
+(fn math.exp [x]
+  "Returns the value e^x (where e is the base of natural logarithms).")
+(fn math.floor [x]
+  "Returns the largest integral value smaller than or equal to x.")
+(fn math.fmod [x y]
+  "Returns the remainder of the division of x by y that rounds the quotient towards zero.")
 (global math.huge 0)
-(fn math.log [x ?base])
-(fn math.max [x & ...])
+(fn math.log [x ?base]
+  "Returns the logarithm of x in the given base (defaults to e).")
+(fn math.max [x & ...]
+  "Returns the argument with the maximum value, according to the Lua operator <.")
 (global math.maxinteger 0)
-(fn math.min [x & ...])
+(fn math.min [x & ...]
+  "Returns the argument with the minimum value, according to the Lua operator <.")
 (global math.mininteger 0)
-(fn math.modf [x])
+(fn math.modf [x]
+  "Returns the integral part of x and the fractional part of x.")
 (global math.pi 3.14)
-(fn math.rad [x])
-(fn math.random [?m ?n])
-(fn math.randomseed [?x ?y])
-(fn math.sin [x])
-(fn math.sqrt [x])
-(fn math.tan [x])
-(fn math.tointeger [x])
-(fn math.type [x])
-(fn math.ult [m n])
+(fn math.rad [x]
+  "Converts the angle x from degrees to radians.")
+(fn math.random [?m ?n]
+  "When called without arguments, returns a pseudo-random float between 0 and 1. When called with two integers m and n, returns a pseudo-random integer in the range [m, n].")
+(fn math.randomseed [?x ?y]
+  "Sets the seed for the pseudo-random generator.")
+(fn math.sin [x]
+  "Returns the sine of x (assumed to be in radians).")
+(fn math.sqrt [x]
+  "Returns the square root of x.")
+(fn math.tan [x]
+  "Returns the tangent of x (assumed to be in radians).")
+(fn math.tointeger [x]
+  "If the value x can be converted to an integer, returns that integer. Otherwise, returns nil.")
+(fn math.type [x]
+  "Returns \"integer\" if x is an integer, \"float\" if it is a float, or nil if x is not a number.")
+(fn math.ult [m n]
+  "Returns a boolean, true if and only if integer m is below integer n when they are compared as unsigned integers.")
 
 (global os {})
-(fn os.clock [])
-(fn os.date [?format ?time])
-(fn os.difftime [t2 t1])
-(fn os.execute [?command])
-(fn os.exit [?code ?close])
-(fn os.getenv [varname])
-(fn os.remove [filename])
-(fn os.rename [oldname newname])
-(fn os.setlocale [locale ?category])
-(fn os.time [?table])
-(fn os.tmpname [])
+(fn os.clock []
+  "Returns an approximation that the program spent in CPU time in seconds.")
+(fn os.date [?format ?time]
+  "Returns a string or a table containing date and time, formatted according to the given string format.")
+(fn os.difftime [t2 t1]
+  "Returns the difference, in seconds, from time t1 to time t2.")
+(fn os.execute [?command]
+  "Passes command to be executed by an operating system shell.")
+(fn os.exit [?code ?close]
+  "Calls the ISO C function exit to terminate the host program.")
+(fn os.getenv [varname]
+  "Returns the value of the process environment variable varname.")
+(fn os.remove [filename]
+  "Deletes the file (or empty directory) with the given name.")
+(fn os.rename [oldname newname]
+  "Renames the file or directory named oldname to newname.")
+(fn os.setlocale [locale ?category]
+  "Sets the current locale of the program.")
+(fn os.time [?table]
+  "Returns the current time when called without arguments, or a time representing the local date and time specified by the given table.")
+(fn os.tmpname []
+  "Returns a string with a file name that can be used for a temporary file.")
 
 (global package {})
 (global package.config "")
 (global package.cpath "")
 (global package.loaded {})
-(fn package.loadlib [libname funcname])
+(fn package.loadlib [libname funcname]
+  "Dynamically links the host program with the C library libname.")
 (global package.path "")
 (global package.preload {})
 (global package.searchers [])
-(fn package.searchpath [name path ?sep ?rep])
+(fn package.searchpath [name path ?sep ?rep]
+  "Searches for the given name in the given path.")
 
 (global string {})
-(fn string.byte [s ?i ?j])
-(fn string.char [& ...])
-(fn string.dump [f ?strip])
-(fn string.find [s pattern ?init ?plain])
-(fn string.format [formatstring & ...])
-(fn string.gmatch [s pattern])
-(fn string.gsub [s pattern repl ?n])
-(fn string.len [s])
-(fn string.lower [s])
-(fn string.match [s pattern ?init])
-(fn string.pack [fmt v1 v2 & ...])
-(fn string.packsize [fmt])
-(fn string.rep [s n ?sep])
-(fn string.reverse [s])
-(fn string.sub [s i ?j])
-(fn string.unpack [fmt s ?pos])
-(fn string.upper [s])
+(fn string.byte [s ?i ?j]
+  "Returns the internal numeric codes of the characters s[i], s[i+1], ..., s[j].")
+(fn string.char [& ...]
+  "Receives zero or more integers. Returns a string with length equal to the number of arguments, where each character has the internal numeric code equal to its corresponding argument.")
+(fn string.dump [f ?strip]
+  "Returns a string containing a binary representation (a binary chunk) of the given function.")
+(fn string.find [s pattern ?init ?plain]
+  "Looks for the first match of pattern in the string s.")
+(fn string.format [formatstring & ...]
+  "Returns a formatted version of its variable number of arguments following the description given in its first argument.")
+(fn string.gmatch [s pattern ?init]
+  "Returns an iterator function that, each time it is called, returns the next captures from pattern over the string s.")
+(fn string.gsub [s pattern repl ?n]
+  "Returns a copy of s in which all (or the first n, if given) occurrences of the pattern have been replaced by a replacement specified by repl.")
+(fn string.len [s]
+  "Receives a string and returns its length.")
+(fn string.lower [s]
+  "Receives a string and returns a copy of this string with all uppercase letters changed to lowercase.")
+(fn string.match [s pattern ?init]
+  "Looks for the first match of pattern in the string s. If it finds one, then match returns the captures from the pattern; otherwise it returns nil.")
+(fn string.pack [fmt v1 v2 & ...]
+  "Returns a binary string containing the values v1, v2, etc. serialized according to the format string fmt.")
+(fn string.packsize [fmt]
+  "Returns the size of a string resulting from string.pack with the given format.")
+(fn string.rep [s n ?sep]
+  "Returns a string that is the concatenation of n copies of the string s separated by the string sep.")
+(fn string.reverse [s]
+  "Returns a string that is the string s reversed.")
+(fn string.sub [s i ?j]
+  "Returns the substring of s that starts at i and continues until j.")
+(fn string.unpack [fmt s ?pos]
+  "Returns the values packed in string s according to the format string fmt.")
+(fn string.upper [s]
+  "Receives a string and returns a copy of this string with all lowercase letters changed to uppercase.")
 
 (global table {})
-(fn table.concat [list ?sep ?i ?j])
-(fn table.insert [list ?pos value])
-(fn table.move [a1 f e t ?a2])
-(fn table.pack [& ...])
-(fn table.remove [list ?pos])
-(fn table.sort [list ?comp])
-(fn table.unpack [list ?i ?j])
+(fn table.concat [list ?sep ?i ?j]
+  "Given a list where all elements are strings or numbers, returns the string list[i]..sep..list[i+1] ... sep..list[j].")
+(fn table.insert [list ?pos value]
+  "Inserts element value at position pos in list, shifting up the elements list[pos], list[pos+1], ..., list[#list].")
+(fn table.move [a1 f e t ?a2]
+  "Moves elements from table a1 to table a2, performing the equivalent to a2[t+i-f] = a1[i] for f <= i <= e.")
+(fn table.pack [& ...]
+  "Returns a new table with all arguments stored into keys 1, 2, etc. and with a field \"n\" with the total number of arguments.")
+(fn table.remove [list ?pos]
+  "Removes from list the element at position pos, returning the value of the removed element.")
+(fn table.sort [list ?comp]
+  "Sorts list elements in a given order, in-place, from list[1] to list[#list].")
+(fn table.unpack [list ?i ?j]
+  "Returns the elements from the given list. By default, i is 1 and j is #list.")
 
 (global utf8 {})
-(fn utf8.char [& ...])
+(fn utf8.char [& ...]
+  "Receives zero or more integers, converts each one to its corresponding UTF-8 byte sequence and returns a string with the concatenation of all these sequences.")
 (global utf8.charpattern "")
-(fn utf8.codes [s])
-(fn utf8.codepoint [s ?i ?j])
-(fn utf8.len [s ?i ?j])
-(fn utf8.offset [s n ?i])
+(fn utf8.codes [s ?lax]
+  "Returns an iterator function so that the construction `for p, c in utf8.codes(s) do` iterates over all UTF-8 characters in string s.")
+(fn utf8.codepoint [s ?i ?j ?lax]
+  "Returns the codepoints (as integers) from all characters in s that start between byte position i and j.")
+(fn utf8.len [s ?i ?j ?lax]
+  "Returns the number of UTF-8 characters in string s that start between positions i and j.")
+(fn utf8.offset [s n ?i]
+  "Returns the position (in bytes) where the encoding of the n-th character of s (counting from position i) starts.")

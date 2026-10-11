@@ -212,16 +212,26 @@ impl tower_lsp::LanguageServer for Backend {
                     return Ok(None);
                 };
 
-                if self.std_ast.definition_for_global(base).is_some() {
-                    let std_doc = self.doc_map.get(&self.std_uri);
-                    let std_range_fn = |range: fennel_parser::TextRange| -> Range {
-                        if let Some(doc) = &std_doc {
-                            lsp_range(doc, range).unwrap_or_else(|_| lsp_range_head())
-                        } else {
-                            lsp_range_head()
-                        }
-                    };
+                let std_doc = self.doc_map.get(&self.std_uri);
+                let std_range_fn = |range: fennel_parser::TextRange| -> Range {
+                    if let Some(doc) = &std_doc {
+                        lsp_range(doc, range).unwrap_or_else(|_| lsp_range_head())
+                    } else {
+                        lsp_range_head()
+                    }
+                };
 
+                let (std_symbols, _, _, _) =
+                    self.std_ast.completion(self.std_ast.end_offset(), None);
+                if let Some(target_lsymbol) = std_symbols.into_iter().find(|s| s.token.text == text)
+                {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                        self.std_uri.clone(),
+                        std_range_fn(target_lsymbol.token.range),
+                    ))));
+                }
+
+                if self.std_ast.definition_for_global(base).is_some() {
                     if fields.len() > 1 {
                         if let Some(target_lsymbol) = self
                             .find_symbol_in_ast(
@@ -565,11 +575,14 @@ impl tower_lsp::LanguageServer for Backend {
                                 .strip_prefix(&prefix)
                                 .ok_or_else(Error::invalid_request)?;
                             if !field.contains('.') {
+                                let (detail, documentation) =
+                                    self.symbol_completion_detail_and_doc(sym, &self.std_ast);
                                 completions.push(CompletionItem {
                                     label: field.to_string(),
                                     insert_text: Some(field.to_string()),
                                     kind: Some(CompletionItemKind::FIELD),
-                                    detail: Some(field.to_string()),
+                                    detail,
+                                    documentation,
                                     ..Default::default()
                                 });
                             }

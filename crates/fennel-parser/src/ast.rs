@@ -570,6 +570,7 @@ impl Ast {
             if !l_symbol.token.text.starts_with('_')
                 && l_symbol.scope.kind != models::ScopeKind::Global
                 && l_symbol.token.text != "..."
+                && !l_symbol.token.text.contains('.')
                 && !self.r_symbols.iter().any(|r_symbol| l_symbol.contains_token(&r_symbol.token))
             {
                 Some(Error::new(l_symbol.token.range, Unused))
