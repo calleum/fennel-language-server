@@ -256,4 +256,48 @@ mod tests {
         assert!(assert_item.detail.as_ref().unwrap().contains("assert"));
         assert!(assert_item.documentation.is_some());
     }
+
+    #[tokio::test]
+    async fn test_workspace_symbols() {
+        let code1 = "(local my-local 1)\n(fn compute-sum [a b] (+ a b))";
+        let (backend, uri1) = setup_backend(code1).await;
+
+        let code2 = "(global global-val 42)\n(macro helper-macro [x] x)";
+        let uri2 = Url::parse("file:///other.fnl").expect("other URL should be valid");
+        backend.doc_map.insert(uri2.clone(), ropey::Rope::from_str(code2));
+        let ast2 = fennel_parser::parse(code2.chars(), std::collections::HashSet::new());
+        backend.ast_map.insert(uri2.clone(), ast2);
+
+        let params_all = WorkspaceSymbolParams {
+            query: String::new(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        let res_all = backend
+            .symbol(params_all)
+            .await
+            .expect("workspace symbol should not error")
+            .expect("should return symbols");
+        let names: Vec<&str> = res_all.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"my-local"));
+        assert!(names.contains(&"compute-sum"));
+        assert!(names.contains(&"global-val"));
+        assert!(names.contains(&"helper-macro"));
+
+        let params_filtered = WorkspaceSymbolParams {
+            query: "sum".into(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        let res_filtered = backend
+            .symbol(params_filtered)
+            .await
+            .expect("workspace symbol should not error")
+            .expect("should return filtered symbols");
+        assert_eq!(res_filtered.len(), 1);
+        let first = res_filtered.first().expect("should have one symbol");
+        assert_eq!(first.name, "compute-sum");
+        assert_eq!(first.kind, SymbolKind::FUNCTION);
+        assert_eq!(first.location.uri, uri1);
+    }
 }

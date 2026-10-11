@@ -197,11 +197,19 @@ pub struct AstSymbolInformation {
 
     /// The location of this symbol.
     pub location: TextRange,
+
+    /// The container name, if nested.
+    pub container_name: Option<String>,
 }
 
 impl AstSymbolInformation {
-    pub fn new(name: String, kind: ValueKind, location: TextRange) -> Self {
-        Self { name, kind, location }
+    pub fn new(
+        name: String,
+        kind: ValueKind,
+        location: TextRange,
+        container_name: Option<String>,
+    ) -> Self {
+        Self { name, kind, location, container_name }
     }
 }
 

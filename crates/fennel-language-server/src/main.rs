@@ -81,6 +81,7 @@ impl tower_lsp::LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
@@ -289,6 +290,46 @@ impl tower_lsp::LanguageServer for Backend {
         let lsp_symbols: Vec<DocumentSymbol> =
             symbols.iter().filter_map(|s| to_lsp_symbol(&doc, s)).collect();
         Ok(Some(DocumentSymbolResponse::Nested(lsp_symbols)))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let mut result = Vec::new();
+
+        for entry in self.ast_map.iter() {
+            let uri = entry.key();
+            let ast = entry.value();
+
+            let Some(doc) = self.doc_map.get(uri) else {
+                continue;
+            };
+
+            for sym in ast.workspace_symbols() {
+                if !document_symbols_view(&sym.kind) {
+                    continue;
+                }
+                if !query.is_empty() && !sym.name.to_lowercase().contains(&query) {
+                    continue;
+                }
+
+                if let Ok(range) = lsp_range(&doc, sym.location) {
+                    #[expect(deprecated, reason = "deprecated is deprecated in SymbolInformation")]
+                    result.push(SymbolInformation {
+                        name: sym.name,
+                        kind: value_kind_to_symbol_kind(sym.kind),
+                        tags: None,
+                        deprecated: None,
+                        location: Location::new(uri.clone(), range),
+                        container_name: sym.container_name,
+                    });
+                }
+            }
+        }
+
+        Ok(Some(result))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {

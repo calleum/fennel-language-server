@@ -177,6 +177,30 @@ impl Ast {
         self.get_children(root)
     }
 
+    pub fn workspace_symbols(&self) -> Vec<AstSymbolInformation> {
+        let mut symbols = Vec::new();
+        let doc_symbols = self.document_symbols();
+        fn collect(
+            symbols: &[AstDocumentSymbol],
+            container: Option<&str>,
+            out: &mut Vec<AstSymbolInformation>,
+        ) {
+            for sym in symbols {
+                out.push(AstSymbolInformation::new(
+                    sym.name.clone(),
+                    sym.kind.clone(),
+                    sym.selection_range,
+                    container.map(ToString::to_string),
+                ));
+                if let Some(children) = &sym.children {
+                    collect(children, Some(&sym.name), out);
+                }
+            }
+        }
+        collect(&doc_symbols, None, &mut symbols);
+        symbols
+    }
+
     pub fn reference_token(&self, token: Token) -> Option<Vec<TextRange>> {
         let mut ranges = Vec::new();
         ranges.extend(
