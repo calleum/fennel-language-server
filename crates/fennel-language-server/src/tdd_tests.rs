@@ -36,7 +36,6 @@ mod tests {
 
     /// TDD for Task 3: SelectionRange Provider
     #[tokio::test]
-    #[ignore = "selection_range provider not yet implemented"]
     async fn test_selection_range() {
         let code = "(let [x 1] (+ x 2))";
         let (backend, uri) = setup_backend(code).await;
@@ -70,6 +69,31 @@ mod tests {
         let grandparent = parent.parent.as_ref().expect("should have grandparent range");
         assert_eq!(grandparent.range.start.character, 0);
         assert_eq!(grandparent.range.end.character, 19);
+    }
+
+    #[tokio::test]
+    async fn test_selection_range_table() {
+        let code = "{:foo 123}";
+        let (backend, uri) = setup_backend(code).await;
+
+        let params = SelectionRangeParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            positions: vec![Position::new(0, 6)],
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.selection_range(params).await.expect("should not error");
+        let ranges = response.expect("should return selection ranges");
+        assert_eq!(ranges.len(), 1);
+
+        let range = &ranges[0];
+        assert_eq!(range.range.start.character, 6);
+        assert_eq!(range.range.end.character, 9);
+
+        let parent = range.parent.as_ref().expect("should have parent range");
+        assert!(parent.range.start.character <= 6);
+        assert!(parent.range.end.character >= 9);
     }
 
     /// TDD for Task 6: Document Highlights

@@ -16,7 +16,7 @@ use std::{
 
 use clap::Parser;
 use dashmap::DashMap;
-use fennel_parser::{Ast, SyntaxNode, models};
+use fennel_parser::{Ast, SyntaxKind, SyntaxNode, models};
 use helper::*;
 use ropey::Rope;
 use rowan::ast::AstNode;
@@ -90,6 +90,7 @@ impl tower_lsp::LanguageServer for Backend {
                     ..Default::default()
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -568,6 +569,62 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(res.collect()))
     }
 
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = params.text_document.uri;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let root = SyntaxNode::new_root(ast.root.clone());
+
+        let mut results = Vec::new();
+        for position in params.positions {
+            let offset = position_to_byte_offset(&doc, position)?;
+            let text_size = rowan::TextSize::from(offset);
+
+            let token_opt = match root.token_at_offset(text_size) {
+                rowan::TokenAtOffset::Single(token) => Some(token),
+                rowan::TokenAtOffset::Between(left, right) => {
+                    if right.kind() != SyntaxKind::WHITESPACE { Some(right) } else { Some(left) }
+                }
+                rowan::TokenAtOffset::None => None,
+            };
+
+            let Some(token) = token_opt else {
+                continue;
+            };
+
+            let mut ranges = Vec::new();
+            if token.kind() != SyntaxKind::WHITESPACE {
+                ranges.push(token.text_range());
+            }
+
+            for ancestor in token.parent().into_iter().flat_map(|p| p.ancestors()) {
+                if is_selection_node_kind(ancestor.kind()) {
+                    let range = ancestor.text_range();
+                    if ranges.last() != Some(&range) {
+                        ranges.push(range);
+                    }
+                }
+            }
+
+            let mut current: Option<SelectionRange> = None;
+            for r in ranges.into_iter().rev() {
+                if let Ok(lsp_range) = lsp_range(&doc, r) {
+                    current =
+                        Some(SelectionRange { range: lsp_range, parent: current.map(Box::new) });
+                }
+            }
+
+            if let Some(sr) = current {
+                results.push(sr);
+            }
+        }
+
+        Ok(Some(results))
+    }
+
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
         for fol in self.workspace_map.iter() {
@@ -949,6 +1006,29 @@ impl Backend {
                 .or_else(|| check_exist(rel, "fnl", true))
         })
     }
+}
+
+fn is_selection_node_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::N_LIST
+            | SyntaxKind::N_MACRO_LIST
+            | SyntaxKind::N_SEQ_TABLE
+            | SyntaxKind::N_KV_TABLE
+            | SyntaxKind::N_ASSIGN_TABLE
+            | SyntaxKind::N_FOR_TABLE
+            | SyntaxKind::N_EACH_TABLE
+            | SyntaxKind::N_PARAM_TABLE
+            | SyntaxKind::N_ICOLLECT_TABLE
+            | SyntaxKind::N_COLLECT_TABLE
+            | SyntaxKind::N_FCOLLECT_TABLE
+            | SyntaxKind::N_ACCUMULATE_TABLE
+            | SyntaxKind::N_KV_PAIR
+            | SyntaxKind::N_NV_PAIR
+            | SyntaxKind::N_ASSIGN_PAIR
+            | SyntaxKind::N_SET_PAIR
+            | SyntaxKind::ROOT
+    )
 }
 
 #[tokio::main]
