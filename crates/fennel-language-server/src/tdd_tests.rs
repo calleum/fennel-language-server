@@ -814,4 +814,32 @@ mod tests {
         assert_eq!(edit.range, Range::new(Position::new(0, 0), Position::new(0, 0)));
         assert_eq!(edit.new_text, "(local add-numbers (require :src.math))\n");
     }
+
+    #[tokio::test]
+    async fn test_call_hierarchy() {
+        let code = "(fn callee [x]\n  (+ x 1))\n\n(fn middle []\n  (callee 10)\n  (callee 20))\n\n(fn caller []\n  (middle))\n";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test_call_hierarchy.fnl", code);
+
+        let items = harness.prepare_call_hierarchy(&uri, 3, 5).await.unwrap().unwrap();
+        assert_eq!(items.len(), 1);
+        let middle_item = items.first().unwrap().clone();
+        assert_eq!(middle_item.name, "middle");
+        assert_eq!(middle_item.kind, SymbolKind::FUNCTION);
+
+        let incoming = harness.incoming_calls(middle_item.clone()).await.unwrap().unwrap();
+        assert_eq!(incoming.len(), 1);
+        let caller_inc = incoming.first().unwrap();
+        assert_eq!(caller_inc.from.name, "caller");
+        assert_eq!(caller_inc.from_ranges.len(), 1);
+        assert_eq!(caller_inc.from_ranges.first().unwrap().start.line, 8);
+
+        let outgoing = harness.outgoing_calls(middle_item).await.unwrap().unwrap();
+        assert_eq!(outgoing.len(), 1);
+        let callee_out = outgoing.first().unwrap();
+        assert_eq!(callee_out.to.name, "callee");
+        assert_eq!(callee_out.from_ranges.len(), 2);
+        assert_eq!(callee_out.from_ranges.first().unwrap().start.line, 4);
+        assert_eq!(callee_out.from_ranges.get(1).expect("call 2").start.line, 5);
+    }
 }

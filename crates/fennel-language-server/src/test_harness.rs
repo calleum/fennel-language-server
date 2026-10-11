@@ -346,6 +346,46 @@ impl TestHarness {
         self.backend.initialized(InitializedParams {}).await;
         Ok(res)
     }
+
+    pub async fn prepare_call_hierarchy(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<Vec<CallHierarchyItem>>> {
+        let params = CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.prepare_call_hierarchy(params).await
+    }
+
+    pub async fn incoming_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
+        let params = CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.backend.incoming_calls(params).await
+    }
+
+    pub async fn outgoing_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let params = CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        self.backend.outgoing_calls(params).await
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {
