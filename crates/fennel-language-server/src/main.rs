@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod helper;
+mod semantic_tokens;
 mod view;
 
 #[cfg(test)]
@@ -98,6 +99,16 @@ impl tower_lsp::LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                            legend: semantic_tokens::semantic_tokens_legend(),
+                            range: None,
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
         })
@@ -811,6 +822,18 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         Ok(Some(highlights))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+
+        let tokens = semantic_tokens::semantic_tokens_full(&doc, &ast, &self.std_ast);
+        Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {

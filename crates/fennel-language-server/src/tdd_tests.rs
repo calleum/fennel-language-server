@@ -382,4 +382,100 @@ mod tests {
         assert!(format_item.detail.as_ref().unwrap().contains("string.format"));
         assert!(format_item.documentation.is_some());
     }
+
+    #[tokio::test]
+    async fn test_semantic_tokens() {
+        let code = ";; my comment\n(fn add [x y] (+ x y))\n(local my-var 42)\n(print \"done\")";
+        let (backend, uri) = setup_backend(code).await;
+
+        let params = SemanticTokensParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend
+            .semantic_tokens_full(params)
+            .await
+            .expect("should not error")
+            .expect("should return semantic tokens");
+
+        let tokens = match response {
+            SemanticTokensResult::Tokens(t) => t.data,
+            SemanticTokensResult::Partial(_) => panic!("unexpected partial result"),
+        };
+
+        let mut absolute_tokens = Vec::new();
+        let mut current_line = 0;
+        let mut current_col = 0;
+        for t in &tokens {
+            if t.delta_line > 0 {
+                current_line += t.delta_line;
+                current_col = t.delta_start;
+            } else {
+                current_col += t.delta_start;
+            }
+            absolute_tokens.push((
+                current_line,
+                current_col,
+                t.length,
+                t.token_type,
+                t.token_modifiers_bitset,
+            ));
+        }
+
+        use crate::semantic_tokens::*;
+
+        let comment_tok = absolute_tokens.iter().find(|t| t.0 == 0);
+        assert!(comment_tok.is_some());
+        let c = comment_tok.unwrap();
+        assert_eq!(c.2, 13);
+        assert_eq!(c.3, TOKEN_TYPE_COMMENT);
+
+        let fn_tok = absolute_tokens.iter().find(|t| t.0 == 1 && t.1 == 1);
+        assert!(fn_tok.is_some());
+        assert_eq!(fn_tok.unwrap().3, TOKEN_TYPE_KEYWORD);
+
+        let add_tok = absolute_tokens.iter().find(|t| t.0 == 1 && t.1 == 4);
+        assert!(add_tok.is_some());
+        let a = add_tok.unwrap();
+        assert_eq!(a.3, TOKEN_TYPE_FUNCTION);
+        assert_ne!(a.4 & MODIFIER_DECLARATION, 0);
+
+        let x_tok = absolute_tokens.iter().find(|t| t.0 == 1 && t.1 == 9);
+        assert!(x_tok.is_some());
+        let x = x_tok.unwrap();
+        assert_eq!(x.3, TOKEN_TYPE_PARAMETER);
+        assert_ne!(x.4 & MODIFIER_DECLARATION, 0);
+
+        let plus_tok = absolute_tokens.iter().find(|t| t.0 == 1 && t.1 == 15);
+        assert!(plus_tok.is_some());
+        assert_eq!(plus_tok.unwrap().3, TOKEN_TYPE_OPERATOR);
+
+        let x_use_tok = absolute_tokens.iter().find(|t| t.0 == 1 && t.1 == 17);
+        assert!(x_use_tok.is_some());
+        let xu = x_use_tok.unwrap();
+        assert_eq!(xu.3, TOKEN_TYPE_PARAMETER);
+        assert_eq!(xu.4 & MODIFIER_DECLARATION, 0);
+
+        let var_tok = absolute_tokens.iter().find(|t| t.0 == 2 && t.1 == 7);
+        assert!(var_tok.is_some());
+        let v = var_tok.unwrap();
+        assert_eq!(v.3, TOKEN_TYPE_VARIABLE);
+        assert_ne!(v.4 & MODIFIER_DECLARATION, 0);
+
+        let num_tok = absolute_tokens.iter().find(|t| t.0 == 2 && t.1 == 14);
+        assert!(num_tok.is_some());
+        assert_eq!(num_tok.unwrap().3, TOKEN_TYPE_NUMBER);
+
+        let print_tok = absolute_tokens.iter().find(|t| t.0 == 3 && t.1 == 1);
+        assert!(print_tok.is_some());
+        let p = print_tok.unwrap();
+        assert_eq!(p.3, TOKEN_TYPE_FUNCTION);
+        assert_ne!(p.4 & MODIFIER_DEFAULT_LIBRARY, 0);
+
+        let str_tok = absolute_tokens.iter().find(|t| t.0 == 3 && t.1 == 7);
+        assert!(str_tok.is_some());
+        assert_eq!(str_tok.unwrap().3, TOKEN_TYPE_STRING);
+    }
 }

@@ -599,7 +599,7 @@ impl Ast {
         })
     }
 
-    fn l_symbol(&self, offset: u32) -> Option<&models::LSymbol> {
+    pub fn l_symbol(&self, offset: u32) -> Option<&models::LSymbol> {
         self.l_symbols.get(offset)
     }
 
