@@ -159,4 +159,32 @@ mod tests {
         // Active parameter should be 1 (the second one, 'b')
         assert_eq!(help.active_parameter, Some(1));
     }
+
+    /// TDD for Task 2: Folding Range Provider
+    #[tokio::test]
+    async fn test_folding_range() {
+        let code = ";; comment line 1\n;; comment line 2\n(fn my-func [a\n             b]\n  (+ a\n     b))\n";
+        let (backend, uri) = setup_backend(code).await;
+        let params = FoldingRangeParams {
+            text_document: TextDocumentIdentifier::new(uri),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.folding_range(params).await.expect("should not error");
+        let folds = response.expect("should return folding ranges");
+        assert!(!folds.is_empty());
+
+        let comment_fold = folds.iter().find(|f| f.kind == Some(FoldingRangeKind::Comment));
+        assert!(comment_fold.is_some(), "should have a comment fold");
+        let cf = comment_fold.unwrap();
+        assert_eq!(cf.start_line, 0);
+        assert_eq!(cf.end_line, 1);
+
+        let fn_fold = folds.iter().find(|f| f.start_line == 2 && f.end_line == 5);
+        assert!(fn_fold.is_some(), "should have an outer function fold from line 2 to 5");
+
+        let param_fold = folds.iter().find(|f| f.start_line == 2 && f.end_line == 3);
+        assert!(param_fold.is_some(), "should have a param table fold from line 2 to 3");
+    }
 }

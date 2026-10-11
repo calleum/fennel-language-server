@@ -91,6 +91,7 @@ impl tower_lsp::LanguageServer for Backend {
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
         })
@@ -625,6 +626,103 @@ impl tower_lsp::LanguageServer for Backend {
         Ok(Some(results))
     }
 
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let root = SyntaxNode::new_root(ast.root.clone());
+
+        let mut folds = Vec::new();
+        let mut seen = HashSet::new();
+
+        for node in root.descendants() {
+            if is_folding_node_kind(node.kind()) {
+                let range = node.text_range();
+                if let (Ok(start_pos), Ok(end_pos)) = (
+                    byte_offset_to_position(&doc, range.start().into()),
+                    byte_offset_to_position(&doc, range.end().into()),
+                ) {
+                    let end_line = if end_pos.character == 0 && end_pos.line > start_pos.line {
+                        end_pos.line - 1
+                    } else {
+                        end_pos.line
+                    };
+                    if end_line > start_pos.line && seen.insert((start_pos.line, end_line)) {
+                        folds.push(FoldingRange {
+                            start_line: start_pos.line,
+                            start_character: None,
+                            end_line,
+                            end_character: None,
+                            kind: None,
+                            collapsed_text: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut current_comment_start: Option<u32> = None;
+        let mut current_comment_end: Option<u32> = None;
+
+        for element in root.descendants_with_tokens() {
+            let Some(token) = element.into_token() else {
+                continue;
+            };
+            if token.kind() == SyntaxKind::COMMENT {
+                let range = token.text_range();
+                if let (Ok(start_pos), Ok(end_pos)) = (
+                    byte_offset_to_position(&doc, range.start().into()),
+                    byte_offset_to_position(&doc, range.end().into()),
+                ) {
+                    let end_line = if end_pos.character == 0 && end_pos.line > start_pos.line {
+                        end_pos.line - 1
+                    } else {
+                        end_pos.line
+                    };
+                    if let (Some(prev_start), Some(prev_end)) =
+                        (current_comment_start, current_comment_end)
+                    {
+                        if start_pos.line <= prev_end + 1 {
+                            current_comment_end = Some(end_line.max(prev_end));
+                        } else {
+                            if prev_end > prev_start && seen.insert((prev_start, prev_end)) {
+                                folds.push(FoldingRange {
+                                    start_line: prev_start,
+                                    start_character: None,
+                                    end_line: prev_end,
+                                    end_character: None,
+                                    kind: Some(FoldingRangeKind::Comment),
+                                    collapsed_text: None,
+                                });
+                            }
+                            current_comment_start = Some(start_pos.line);
+                            current_comment_end = Some(end_line);
+                        }
+                    } else {
+                        current_comment_start = Some(start_pos.line);
+                        current_comment_end = Some(end_line);
+                    }
+                }
+            }
+        }
+
+        if let (Some(prev_start), Some(prev_end)) = (current_comment_start, current_comment_end)
+            && prev_end > prev_start
+            && seen.insert((prev_start, prev_end))
+        {
+            folds.push(FoldingRange {
+                start_line: prev_start,
+                start_character: None,
+                end_line: prev_end,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Comment),
+                collapsed_text: None,
+            });
+        }
+
+        Ok(Some(folds))
+    }
+
     async fn initialized(&self, _: InitializedParams) {
         self.client.log_message(MessageType::LOG, "initialized!").await;
         for fol in self.workspace_map.iter() {
@@ -1028,6 +1126,29 @@ fn is_selection_node_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::N_ASSIGN_PAIR
             | SyntaxKind::N_SET_PAIR
             | SyntaxKind::ROOT
+    )
+}
+
+fn is_folding_node_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::N_LIST
+            | SyntaxKind::N_MACRO_LIST
+            | SyntaxKind::N_SEQ_TABLE
+            | SyntaxKind::N_KV_TABLE
+            | SyntaxKind::N_ASSIGN_TABLE
+            | SyntaxKind::N_FOR_TABLE
+            | SyntaxKind::N_EACH_TABLE
+            | SyntaxKind::N_PARAM_TABLE
+            | SyntaxKind::N_ICOLLECT_TABLE
+            | SyntaxKind::N_COLLECT_TABLE
+            | SyntaxKind::N_FCOLLECT_TABLE
+            | SyntaxKind::N_ACCUMULATE_TABLE
+            | SyntaxKind::N_FN
+            | SyntaxKind::N_LAMBDA
+            | SyntaxKind::N_MACRO
+            | SyntaxKind::N_LET
+            | SyntaxKind::N_MATCH
     )
 }
 
