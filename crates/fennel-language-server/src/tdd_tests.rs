@@ -785,4 +785,33 @@ mod tests {
             _ => panic!("Expected definition response"),
         }
     }
+
+    #[tokio::test]
+    async fn test_auto_import_completion() {
+        let mut harness = TestHarness::with_temp_dir();
+        let (_math_path, _math_url) =
+            harness.write_file("src/math.fnl", "(fn add-numbers [a b] (+ a b))\n{: add-numbers}\n");
+        let main_url = harness.write_and_open_file("src/main.fnl", "(print ");
+
+        harness.initialize().await.unwrap();
+
+        let resp = harness.completion(&main_url, 0, 7).await.unwrap().unwrap();
+        let items = match resp {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+
+        let auto_import_item = items.iter().find(|i| i.label == "add-numbers");
+        assert!(auto_import_item.is_some(), "Expected auto-import item for add-numbers");
+        let item = auto_import_item.unwrap();
+
+        assert_eq!(item.insert_text, Some("add-numbers".to_string()));
+        assert!(item.detail.as_ref().unwrap().contains("auto-import"));
+
+        let edits = item.additional_text_edits.as_ref().expect("expected additional text edits");
+        assert_eq!(edits.len(), 1);
+        let edit = edits.first().unwrap();
+        assert_eq!(edit.range, Range::new(Position::new(0, 0), Position::new(0, 0)));
+        assert_eq!(edit.new_text, "(local add-numbers (require :src.math))\n");
+    }
 }

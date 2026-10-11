@@ -897,10 +897,10 @@ impl tower_lsp::LanguageServer for Backend {
         let mut completions: Vec<CompletionItem> =
             symbols.chain(std_completions).chain(globals).collect();
 
-        if let Some(val) = base_value {
-            match val.kind {
+        if let Some(val) = &base_value {
+            match &val.kind {
                 fennel_parser::models::ValueKind::Require(Some(path)) => {
-                    if let Some(resolved_uri) = self.find_file(&uri, path)
+                    if let Some(resolved_uri) = self.find_file(&uri, path.clone())
                         && let Some(resolved_ast) = self.get_or_parse_ast(&resolved_uri).await
                         && let Some(keys) = resolved_ast.return_kv_keys()
                     {
@@ -942,6 +942,58 @@ impl tower_lsp::LanguageServer for Backend {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        if base_value.is_none() {
+            let existing_labels: HashSet<String> =
+                completions.iter().map(|c| c.label.clone()).collect();
+            let mut seen_imports = HashSet::new();
+
+            for entry in self.ast_map.iter() {
+                let other_uri = entry.key();
+                if other_uri == &uri || other_uri == &self.std_uri {
+                    continue;
+                }
+                let Some(mod_name) = self.uri_to_module_name(other_uri) else {
+                    continue;
+                };
+
+                let other_ast = entry.value();
+                let mut exports = Vec::new();
+
+                if let Some(keys) = other_ast.return_kv_keys() {
+                    exports.extend(keys);
+                }
+                for sym in other_ast.all_l_symbols() {
+                    if sym.scope.kind != models::ScopeKind::Local
+                        && !sym.token.text.starts_with('_')
+                        && !exports.contains(&sym.token.text)
+                    {
+                        exports.push(sym.token.text.clone());
+                    }
+                }
+
+                for export in exports {
+                    if !existing_labels.contains(&export)
+                        && seen_imports.insert((export.clone(), mod_name.clone()))
+                    {
+                        completions.push(CompletionItem {
+                            label: export.clone(),
+                            insert_text: Some(export.clone()),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some(format!("(auto-import from :{mod_name})")),
+                            documentation: Some(Documentation::String(format!(
+                                "Auto-import: `(local {export} (require :{mod_name}))`"
+                            ))),
+                            additional_text_edits: Some(vec![TextEdit::new(
+                                Range::new(Position::new(0, 0), Position::new(0, 0)),
+                                format!("(local {export} (require :{mod_name}))\n"),
+                            )]),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
 
@@ -1600,6 +1652,44 @@ impl Backend {
                 self.get_or_parse_ast(f).await;
             }
         }
+    }
+
+    pub(crate) fn uri_to_module_name(&self, file_uri: &Url) -> Option<String> {
+        let file_path = file_uri.to_file_path().ok()?;
+
+        for r in self.workspace_map.iter() {
+            if let Ok(ws_path) = r.key().to_file_path()
+                && let Ok(rel) = file_path.strip_prefix(&ws_path)
+            {
+                let rel_str = rel.to_string_lossy();
+                let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
+                let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
+                let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
+                let mod_name = rel_str.replace(['/', '\\'], ".");
+                if !mod_name.is_empty() {
+                    return Some(mod_name);
+                }
+            }
+        }
+
+        if let Ok(config) = self.config.read() {
+            for lib_url in &config.fennel.workspace.library {
+                if let Ok(lib_path) = lib_url.0.to_file_path()
+                    && let Ok(rel) = file_path.strip_prefix(&lib_path)
+                {
+                    let rel_str = rel.to_string_lossy();
+                    let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
+                    let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
+                    let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
+                    let mod_name = rel_str.replace(['/', '\\'], ".");
+                    if !mod_name.is_empty() {
+                        return Some(mod_name);
+                    }
+                }
+            }
+        }
+
+        file_path.file_stem().map(|s| s.to_string_lossy().to_string())
     }
 
     pub(crate) async fn get_or_parse_ast(&self, uri: &Url) -> Option<Ast> {
