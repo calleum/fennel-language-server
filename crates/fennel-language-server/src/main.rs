@@ -8,6 +8,8 @@ mod view;
 mod tdd_helper;
 #[cfg(test)]
 mod tdd_tests;
+#[cfg(test)]
+pub(crate) mod test_harness;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -33,7 +35,7 @@ use walkdir::WalkDir;
 
 use crate::view::{document_symbols_view, value_kind_to_symbol_kind};
 
-const STUBS_URI: &str = "fennel://stubs/lua54.fnl";
+pub const STUBS_URI: &str = "fennel://stubs/lua54.fnl";
 
 #[derive(Debug, Clone)]
 struct Backend {
@@ -1498,50 +1500,18 @@ fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-    use tower_lsp::LanguageServer;
+    use crate::test_harness::TestHarness;
 
     #[tokio::test]
     async fn test_find_telescope_builtin_normalized() {
-        let dir = tempdir().expect("should create temp dir");
-        let lib_path = dir.path().join("telescope.nvim");
-        let lua_dir = lib_path.join("lua/telescope");
-        fs::create_dir_all(&lua_dir).expect("should create directory");
-        let builtin_lua = lua_dir.join("builtin.lua");
-        fs::write(&builtin_lua, "return {}").expect("should write file");
-
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
-
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-
-        // Configure the library path
-        let lib_url =
-            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
-        backend
-            .config
-            .write()
-            .expect("config lock should not be poisoned")
-            .fennel
-            .workspace
-            .library = vec![config::Url(lib_url)];
+        let harness = TestHarness::with_temp_dir();
+        harness.write_file("telescope.nvim/lua/telescope/builtin.lua", "return {}");
+        harness.add_library_dir(&harness.temp_path().join("telescope.nvim"));
 
         let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
-        // This is what fennel-parser produces for (require :telescope.builtin)
         let target_path = PathBuf::from("telescope/builtin");
 
-        let resolved = backend.find_file(&base_url, target_path);
+        let resolved = harness.backend.find_file(&base_url, target_path);
         assert!(resolved.is_some(), "Should find telescope.builtin in library");
         let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
@@ -1549,43 +1519,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_telescope_builtin() {
-        let dir = tempdir().expect("should create temp dir");
-        let lib_path = dir.path().join("telescope.nvim");
-        let lua_dir = lib_path.join("lua/telescope");
-        fs::create_dir_all(&lua_dir).expect("should create directory");
-        let builtin_lua = lua_dir.join("builtin.lua");
-        fs::write(&builtin_lua, "return {}").expect("should write file");
-
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
-
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-
-        // Configure the library path
-        let lib_url =
-            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
-        backend
-            .config
-            .write()
-            .expect("config lock should not be poisoned")
-            .fennel
-            .workspace
-            .library = vec![config::Url(lib_url)];
+        let harness = TestHarness::with_temp_dir();
+        harness.write_file("telescope.nvim/lua/telescope/builtin.lua", "return {}");
+        harness.add_library_dir(&harness.temp_path().join("telescope.nvim"));
 
         let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
         let target_path = PathBuf::from("telescope/builtin");
 
-        let resolved = backend.find_file(&base_url, target_path);
+        let resolved = harness.backend.find_file(&base_url, target_path);
         assert!(resolved.is_some(), "Should find telescope/builtin in library");
         let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("telescope.nvim/lua/telescope/builtin.lua"));
@@ -1593,43 +1534,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_library_file() {
-        let dir = tempdir().expect("should create temp dir");
-        let lib_path = dir.path().join("my-lib");
-        let lua_dir = lib_path.join("lua/my-lib");
-        fs::create_dir_all(&lua_dir).expect("should create directory");
-        let init_lua = lua_dir.join("init.lua");
-        fs::write(&init_lua, "return {}").expect("should write file");
-
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
-
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-
-        // Configure the library path
-        let lib_url =
-            Url::from_directory_path(&lib_path).expect("path should be a valid directory URL");
-        backend
-            .config
-            .write()
-            .expect("config lock should not be poisoned")
-            .fennel
-            .workspace
-            .library = vec![config::Url(lib_url)];
+        let harness = TestHarness::with_temp_dir();
+        harness.write_file("my-lib/lua/my-lib/init.lua", "return {}");
+        harness.add_library_dir(&harness.temp_path().join("my-lib"));
 
         let base_url = Url::parse("file:///dummy.fnl").expect("dummy URL should be valid");
         let target_path = PathBuf::from("my-lib");
 
-        let resolved = backend.find_file(&base_url, target_path);
+        let resolved = harness.backend.find_file(&base_url, target_path);
         assert!(resolved.is_some());
         let resolved_url = resolved.expect("should have resolved URL");
         assert!(resolved_url.path().ends_with("my-lib/lua/my-lib/init.lua"));
@@ -1638,64 +1550,24 @@ mod tests {
     #[tokio::test]
     async fn test_print_document_symbols() {
         let code = "(local x 1)\n(fn my-func [a] (+ a x))\n(global my-global \"hello\")";
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test.fnl", code);
 
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
-
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
-
-        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
-        let ast = fennel_parser::parse(code.chars(), HashSet::new());
-        backend.ast_map.insert(uri.clone(), ast);
-
-        let params = DocumentSymbolParams {
-            text_document: TextDocumentIdentifier::new(uri),
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-        };
-
-        let response = backend
-            .document_symbol(params)
+        let response = harness
+            .document_symbols(&uri)
             .await
             .expect("document_symbol should not error")
             .expect("should return symbols");
 
-        println!("\n--- Document Symbols Output ---");
-        println!("{code}");
-        fn print_symbol(sym: &DocumentSymbol, indent: usize) {
-            println!(
-                "{:indent$}Symbol: {:<12} | Kind: {:?} | Range: {:?}..{:?}",
-                "",
-                sym.name,
-                sym.kind,
-                sym.range.start,
-                sym.range.end,
-                indent = indent
-            );
-            if let Some(children) = &sym.children {
-                for child in children {
-                    print_symbol(child, indent + 2);
-                }
-            }
-        }
-
         if let DocumentSymbolResponse::Nested(symbols) = response {
-            for sym in symbols {
-                print_symbol(&sym, 0);
-            }
+            assert_eq!(symbols.len(), 4);
+            assert_eq!(symbols[0].name, "x");
+            assert_eq!(symbols[1].name, "my-func");
+            assert_eq!(symbols[2].name, "a");
+            assert_eq!(symbols[3].name, "my-global");
+        } else {
+            panic!("expected Nested symbols response");
         }
-        println!("-------------------------------\n");
     }
 
     #[tokio::test]
@@ -1703,61 +1575,20 @@ mod tests {
         let lib_code = "(fn setup [] (print \"setup\")) {: setup}";
         let main_code = "(local lsp (require :mylib)) (lsp.setup)";
 
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+        let mut harness = TestHarness::with_temp_dir();
+        let _lib_uri = harness.write_and_open_file("mylib.fnl", lib_code);
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
 
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-
-        let dir = tempdir().expect("should create temp dir");
-        let lib_path = dir.path().join("mylib.fnl");
-        fs::write(&lib_path, lib_code).expect("should write file");
-        let lib_uri = Url::from_file_path(&lib_path).expect("path should be a valid file URL");
-        backend.doc_map.insert(lib_uri.clone(), Rope::from_str(lib_code));
-
-        let main_path = dir.path().join("main.fnl");
-        fs::write(&main_path, main_code).expect("should write file");
-        let main_uri = Url::from_file_path(&main_path).expect("path should be a valid file URL");
-
-        backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
-        let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
-        backend.ast_map.insert(main_uri.clone(), main_ast);
-
-        // lsp.setup
-        // 0123456789012345678901234567890123456789
-        // (local lsp (require :mylib)) (lsp.setup)
-        //                              ^   ^
-        //                              30  34
-
-        let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier::new(main_uri.clone()),
-                position: Position::new(0, 34), // on "setup"
-            },
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-        };
-
-        let response =
-            backend.goto_definition(params).await.expect("goto_definition should not error");
-        println!("\n--- Goto Definition Field Access ---");
+        let response = harness
+            .goto_definition(&main_uri, 0, 34)
+            .await
+            .expect("goto_definition should not error");
+        assert!(response.is_some(), "should find definition");
         if let Some(GotoDefinitionResponse::Array(locations)) = response {
-            for loc in locations {
-                println!("Location: {:?} range: {:?}", loc.uri, loc.range);
-            }
-        } else if let Some(GotoDefinitionResponse::Scalar(loc)) = response {
-            println!("Scalar Location: {:?} range: {:?}", loc.uri, loc.range);
+            assert_eq!(locations.len(), 2);
+            assert!(locations.iter().any(|loc| loc.uri.path().ends_with("mylib.fnl")));
         } else {
-            println!("No definition found");
+            panic!("expected Array of locations");
         }
     }
 
@@ -1766,76 +1597,22 @@ mod tests {
         let macro_code = "(fn my-macro [] (print \"macro\")) {: my-macro}";
         let main_code = "(import-macros {: my-macro} :mymacros) (my-macro)";
 
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+        let mut harness = TestHarness::with_temp_dir();
+        let _macro_uri = harness.write_and_open_file("mymacros.fnl", macro_code);
+        let main_uri = harness.write_and_open_file("main.fnl", main_code);
 
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
-
-        let dir = tempdir().expect("should create temp dir");
-        let macro_path = dir.path().join("mymacros.fnl");
-        fs::write(&macro_path, macro_code).expect("should write file");
-        let macro_uri = Url::from_file_path(&macro_path).expect("path should be a valid file URL");
-        backend.doc_map.insert(macro_uri.clone(), Rope::from_str(macro_code));
-
-        let main_path = dir.path().join("main.fnl");
-        fs::write(&main_path, main_code).expect("should write file");
-        let main_uri = Url::from_file_path(&main_path).expect("path should be a valid file URL");
-
-        backend.doc_map.insert(main_uri.clone(), Rope::from_str(main_code));
-        let main_ast = fennel_parser::parse(main_code.chars(), HashSet::new());
-        backend.ast_map.insert(main_uri.clone(), main_ast);
-
-        // my-macro
-        // 012345678901234567890123456789012345678901234567
-        // (import-macros {: my-macro} :mymacros) (my-macro)
-        //                                         ^
-        //                                         40
-
-        let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier::new(main_uri.clone()),
-                position: Position::new(0, 42), // on "my-macro"
-            },
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-        };
-
-        let response =
-            backend.goto_definition(params).await.expect("goto_definition should not error");
-        println!("\n--- Goto Definition Import Macros ---");
-        if let Some(GotoDefinitionResponse::Array(locations)) = response {
-            for loc in locations {
-                println!("Location: {:?} range: {:?}", loc.uri, loc.range);
-            }
-        } else if let Some(GotoDefinitionResponse::Scalar(loc)) = response {
-            println!("Scalar Location: {:?} range: {:?}", loc.uri, loc.range);
+        let response = harness
+            .goto_definition(&main_uri, 0, 42)
+            .await
+            .expect("goto_definition should not error");
+        assert!(response.is_some(), "should find macro definition");
+        if let Some(GotoDefinitionResponse::Scalar(loc)) = response {
+            assert!(loc.uri.path().ends_with("mymacros.fnl"));
         } else {
-            println!("No definition found");
+            panic!("expected Scalar location");
         }
     }
 
-    /// Test that references work when triggered ON a function definition.
-    /// Uses a simplified version of the lspconfig.fnl setup-lsp-highlights pattern.
-    ///
-    /// Code layout:
-    ///   line 0: (fn setup-lsp-highlights [bufnr client]
-    ///   line 1:   (print bufnr client))
-    ///   line 2:
-    ///   line 3: (fn on-attach [bufnr]
-    ///   line 4:   (setup-lsp-highlights bufnr nil))
-    ///
-    /// Cursor on the definition (line 0, char 4) should find both the def
-    /// and the usage on line 4.
     #[tokio::test]
     async fn test_references_from_definition() {
         let code = "\
@@ -1845,70 +1622,21 @@ mod tests {
 (fn on-attach [bufnr]
   (setup-lsp-highlights bufnr nil))";
 
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test.fnl", code);
 
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
+        let locations = harness
+            .references(&uri, 0, 4, true)
+            .await
+            .expect("references from definition should not error")
+            .expect("should find references");
 
-        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
-        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
-        let ast = fennel_parser::parse(code.chars(), HashSet::new());
-        backend.ast_map.insert(uri.clone(), ast);
-
-        // Cursor on the definition "setup-lsp-highlights" at line 0, char 4
-        let params = ReferenceParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier::new(uri.clone()),
-                position: Position::new(0, 4),
-            },
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-            context: ReferenceContext { include_declaration: true },
-        };
-
-        let response = backend.references(params).await;
-        assert!(
-            response.is_ok(),
-            "references from definition should not error, got: {:?}",
-            response
-        );
-
-        let locations = response.expect("references should not error");
-        assert!(locations.is_some(), "should find references when cursor is on the definition");
-
-        let locations = locations.expect("should find references");
-        println!("\n--- References from Definition ---");
-        for loc in &locations {
-            println!(
-                "  Location: {}:{}:{}",
-                loc.uri, loc.range.start.line, loc.range.start.character,
-            );
-        }
-
-        // Should find at least 2 locations: definition + usage
-        assert!(
-            locations.len() >= 2,
-            "expected at least 2 references (def + usage), got {}",
-            locations.len(),
-        );
-
-        // One should be on line 0 (definition), one on line 4 (usage)
+        assert!(locations.len() >= 2);
         let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
-        assert!(lines.contains(&0), "should include definition on line 0, got lines: {:?}", lines,);
-        assert!(lines.contains(&4), "should include usage on line 4, got lines: {:?}", lines,);
+        assert!(lines.contains(&0));
+        assert!(lines.contains(&4));
     }
 
-    /// Test that references work when triggered ON a usage site.
     #[tokio::test]
     async fn test_references_from_usage() {
         let code = "\
@@ -1918,50 +1646,15 @@ mod tests {
 (fn on-attach [bufnr]
   (setup-lsp-highlights bufnr nil))";
 
-        let std_fnl = include_str!("../../../stubs/lua54.fnl");
-        let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+        let mut harness = TestHarness::new();
+        let uri = harness.open_virtual("file:///test.fnl", code);
 
-        let (service, _) = tower_lsp::LspService::new(|client| Backend {
-            client,
-            doc_map: DashMap::new(),
-            ast_map: DashMap::new(),
-            workspace_map: DashMap::new(),
-            on_save_or_open_errors: DashMap::new(),
-            config: Arc::new(RwLock::new(config::Configuration::default())),
-            std_ast,
-            std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
-        });
-        let backend = service.inner();
+        let locations = harness
+            .references(&uri, 4, 3, true)
+            .await
+            .expect("references from usage should not error")
+            .expect("should find references");
 
-        let uri = Url::parse("file:///test.fnl").expect("test URL should be valid");
-        backend.doc_map.insert(uri.clone(), Rope::from_str(code));
-        let ast = fennel_parser::parse(code.chars(), HashSet::new());
-        backend.ast_map.insert(uri.clone(), ast);
-
-        // Cursor on the usage "(setup-lsp-highlights ..." at line 4, char 3
-        //   line 4: "  (setup-lsp-highlights bufnr nil))"
-        //   chars: 0123456789...
-        //   "setup-lsp-highlights" starts at char 3
-        let params = ReferenceParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier::new(uri.clone()),
-                position: Position::new(4, 3),
-            },
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-            context: ReferenceContext { include_declaration: true },
-        };
-
-        let response = backend.references(params).await;
-        assert!(response.is_ok(), "references from usage should not error, got: {:?}", response,);
-
-        let locations = response.expect("references should not error");
-        assert!(locations.is_some(), "should find references when cursor is on usage");
-        let locations = locations.expect("should find references");
-        assert!(
-            locations.len() >= 2,
-            "expected at least 2 references (def + usage), got {}",
-            locations.len(),
-        );
+        assert!(locations.len() >= 2);
     }
 }
