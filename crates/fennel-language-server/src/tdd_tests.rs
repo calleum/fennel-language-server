@@ -98,7 +98,6 @@ mod tests {
 
     /// TDD for Task 6: Document Highlights
     #[tokio::test]
-    #[ignore = "document_highlight provider not yet implemented"]
     async fn test_document_highlight() {
         let code = "(local x 1) (+ x x)";
         let (backend, uri) = setup_backend(code).await;
@@ -126,6 +125,33 @@ mod tests {
 
         assert_eq!(write_count, 1);
         assert_eq!(read_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_document_highlight_from_usage() {
+        let code = "(local x 1) (+ x x)";
+        let (backend, uri) = setup_backend(code).await;
+
+        let params = DocumentHighlightParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri),
+                position: Position::new(0, 15),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let response = backend.document_highlight(params).await.expect("should not error");
+        let highlights = response.expect("should return highlights");
+        assert_eq!(highlights.len(), 3);
+        assert_eq!(
+            highlights.iter().filter(|h| h.kind == Some(DocumentHighlightKind::WRITE)).count(),
+            1
+        );
+        assert_eq!(
+            highlights.iter().filter(|h| h.kind == Some(DocumentHighlightKind::READ)).count(),
+            2
+        );
     }
 
     /// TDD for Task 7: Signature Help

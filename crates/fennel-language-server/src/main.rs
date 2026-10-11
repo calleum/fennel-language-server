@@ -92,6 +92,7 @@ impl tower_lsp::LanguageServer for Backend {
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
         })
@@ -721,6 +722,34 @@ impl tower_lsp::LanguageServer for Backend {
         }
 
         Ok(Some(folds))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let ast = self.ast_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let offset = position_to_byte_offset(&doc, position)?;
+
+        let Some((def_range, usage_ranges)) = ast.document_highlights(offset) else {
+            return Ok(None);
+        };
+
+        let mut highlights = Vec::new();
+        if let Ok(range) = lsp_range(&doc, def_range) {
+            highlights.push(DocumentHighlight { range, kind: Some(DocumentHighlightKind::WRITE) });
+        }
+        for usage in usage_ranges {
+            if let Ok(range) = lsp_range(&doc, usage) {
+                highlights
+                    .push(DocumentHighlight { range, kind: Some(DocumentHighlightKind::READ) });
+            }
+        }
+
+        Ok(Some(highlights))
     }
 
     async fn initialized(&self, _: InitializedParams) {

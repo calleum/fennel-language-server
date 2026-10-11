@@ -208,6 +208,28 @@ impl Ast {
         Some(ranges)
     }
 
+    pub fn document_highlights(&self, offset: u32) -> Option<(TextRange, Vec<TextRange>)> {
+        let root = SyntaxNode::new_root(self.root.clone());
+
+        let token = root.token_at_offset(TextSize::from(offset)).right_biased()?;
+
+        let l_symbol = self.l_symbol(token.text_range().start().into()).cloned().or_else(|| {
+            let r_symbol = self.r_symbol(offset)?;
+            let l_symbol = self.l_symbol_by_r(r_symbol);
+            l_symbol.found().cloned()
+        })?;
+
+        let def_range = l_symbol.token.range;
+        let usages = self
+            .r_symbols
+            .iter()
+            .filter(|s| l_symbol.contains_token(&s.token))
+            .map(|s| s.token.range)
+            .collect();
+
+        Some((def_range, usages))
+    }
+
     pub fn end_offset(&self) -> u32 {
         self.root.text_len().into()
     }
