@@ -456,21 +456,30 @@ impl tower_lsp::LanguageServer for Backend {
 
         let trigger = params.context.and_then(|ctx| ctx.trigger_character);
         let (symbols, globals, base_value, base_text) = ast.completion(offset, trigger);
-        let symbols = symbols.map(|symbol| CompletionItem {
-            label: symbol.token.text.clone(),
-            insert_text: Some(symbol.token.text.clone()),
-            kind: Some(view::completion_scope_kind(symbol.scope.kind)),
-            detail: Some(symbol.token.text.clone()),
-            ..Default::default()
+        let symbols = symbols.map(|symbol| {
+            let (detail, documentation) = self.symbol_completion_detail_and_doc(symbol, &ast);
+            CompletionItem {
+                label: symbol.token.text.clone(),
+                insert_text: Some(symbol.token.text.clone()),
+                kind: Some(view::completion_scope_kind(symbol.scope.kind)),
+                detail,
+                documentation,
+                ..Default::default()
+            }
         });
 
         let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-        let std_completions = std_symbols.map(|symbol| CompletionItem {
-            label: symbol.token.text.clone(),
-            insert_text: Some(symbol.token.text.clone()),
-            kind: Some(view::completion_scope_kind(symbol.scope.kind)),
-            detail: Some(symbol.token.text.clone()),
-            ..Default::default()
+        let std_completions = std_symbols.map(|symbol| {
+            let (detail, documentation) =
+                self.symbol_completion_detail_and_doc(symbol, &self.std_ast);
+            CompletionItem {
+                label: symbol.token.text.clone(),
+                insert_text: Some(symbol.token.text.clone()),
+                kind: Some(view::completion_scope_kind(symbol.scope.kind)),
+                detail,
+                documentation,
+                ..Default::default()
+            }
         });
 
         let globals = globals.into_iter().flat_map(|(kind, vec)| {
@@ -1278,6 +1287,69 @@ impl Backend {
         let label = format!("(fn {} [{}])", callee_name, params.join(" "));
 
         Some((label, params, docstring))
+    }
+
+    fn symbol_completion_detail_and_doc(
+        &self,
+        symbol: &models::LSymbol,
+        ast: &Ast,
+    ) -> (Option<String>, Option<Documentation>) {
+        if matches!(
+            symbol.scope.kind,
+            models::ScopeKind::Func | models::ScopeKind::Lambda | models::ScopeKind::Macro
+        ) {
+            let root = SyntaxNode::new_root(ast.root.clone());
+            if let Some(token) = root.token_at_offset(symbol.token.range.start()).right_biased()
+                && let Some(func_node) = token.parent_ancestors().find(|n| {
+                    matches!(
+                        n.kind(),
+                        SyntaxKind::N_FN | SyntaxKind::N_LAMBDA | SyntaxKind::N_MACRO
+                    )
+                })
+                && let Some(param_table) =
+                    func_node.children().find(|n| n.kind() == SyntaxKind::N_PARAM_TABLE)
+            {
+                let mut params = Vec::new();
+                for element in param_table.descendants_with_tokens() {
+                    if let Some(t) = element.into_token()
+                        && matches!(t.kind(), SyntaxKind::SYMBOL | SyntaxKind::VARARG)
+                    {
+                        params.push(t.text().to_string());
+                    }
+                }
+                let sig = format!("(fn {} [{}])", symbol.token.text, params.join(" "));
+                let mut doc = ast.docstring(symbol.token.range).map(Documentation::String);
+                if doc.is_none()
+                    && let Some(body) =
+                        func_node.children().find(|n| n.kind() == SyntaxKind::N_BODY)
+                {
+                    let sexps: Vec<_> =
+                        body.children().filter(|n| n.kind() == SyntaxKind::N_SEXP).collect();
+                    if sexps.len() == 1
+                        && let Some(first_sexp) = sexps.first()
+                    {
+                        for t in first_sexp.descendants_with_tokens() {
+                            if t.kind() == SyntaxKind::QUOTE_STRING {
+                                let text = t.to_string();
+                                let clean = text
+                                    .strip_prefix('"')
+                                    .and_then(|s| s.strip_suffix('"'))
+                                    .unwrap_or(&text);
+                                doc = Some(Documentation::String(clean.to_string()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                return (Some(sig), doc);
+            }
+        }
+
+        let vk = view::value_kind(&symbol.value.kind);
+        let detail =
+            if !vk.is_empty() { Some(vk.to_string()) } else { Some(symbol.token.text.clone()) };
+        let doc = ast.docstring(symbol.token.range).map(Documentation::String);
+        (detail, doc)
     }
 }
 

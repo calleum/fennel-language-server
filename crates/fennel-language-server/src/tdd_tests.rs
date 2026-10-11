@@ -222,4 +222,38 @@ mod tests {
         let param_fold = folds.iter().find(|f| f.start_line == 2 && f.end_line == 3);
         assert!(param_fold.is_some(), "should have a param table fold from line 2 to 3");
     }
+
+    /// TDD for Task 5: Completion detail and documentation
+    #[tokio::test]
+    async fn test_completion_detail_and_doc() {
+        let code = r#"(fn add [x y] "adds x and y" (+ x y)) (local my-num 42) (add "#;
+        let (backend, uri) = setup_backend(code).await;
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier::new(uri),
+                position: Position::new(0, code.len() as u32),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        };
+
+        let response = backend.completion(params).await.expect("should not error");
+        let items = match response.expect("should return completion items") {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+
+        let add_item = items.iter().find(|i| i.label == "add").expect("should have 'add'");
+        assert_eq!(add_item.detail.as_deref(), Some("(fn add [x y])"));
+        assert!(add_item.documentation.is_some());
+
+        let num_item = items.iter().find(|i| i.label == "my-num").expect("should have 'my-num'");
+        assert_eq!(num_item.detail.as_deref(), Some("number"));
+
+        let assert_item = items.iter().find(|i| i.label == "assert").expect("should have 'assert'");
+        assert!(assert_item.detail.as_ref().unwrap().contains("assert"));
+        assert!(assert_item.documentation.is_some());
+    }
 }
