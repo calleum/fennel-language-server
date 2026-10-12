@@ -1,0 +1,36 @@
+name: Rolling Upstream Checks
+
+# CI can be green today and red next week without any change to this repo,
+# purely because a dependency or the compiler moved. These catch that drift
+# before a user does.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    name: Rust Nightly Regression Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  update:
+    name: Fresh Dependencies Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Resolves to the newest semver-compatible versions, which is not
+      # necessarily what Cargo.lock pins. Catches breakage and new deprecation
+      # warnings in upstream crates.
+      - run: cargo update
+      - run: cargo test --all-features

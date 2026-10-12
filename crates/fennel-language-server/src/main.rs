@@ -7,6 +7,8 @@ mod semantic_tokens;
 mod view;
 
 #[cfg(test)]
+mod property_tests;
+#[cfg(test)]
 mod tdd_helper;
 #[cfg(test)]
 mod tdd_tests;
@@ -367,14 +369,13 @@ impl Backend {
             let Ok(rel) = file_path.strip_prefix(&root) else {
                 continue;
             };
-            let rel_str = rel.to_string_lossy();
-            let rel_str = rel_str.strip_prefix("fnl/").unwrap_or(&rel_str);
-            let rel_str = rel_str.strip_suffix(".fnl").unwrap_or(rel_str);
-            let rel_str = rel_str.strip_suffix("/init").unwrap_or(rel_str);
-            if rel_str.is_empty() {
+            // Normalize separators *before* stripping. `to_string_lossy` yields
+            // backslashes on Windows, so stripping a literal "fnl/" prefix
+            // first would silently never match there and yield module names
+            // like `fnl.foo` instead of `foo`.
+            let Some(mod_name) = module_name_from_relative(rel) else {
                 continue;
-            }
-            let mod_name = rel_str.replace(['/', '\\'], ".");
+            };
             let specificity = root.as_os_str().len();
             if best.as_ref().is_none_or(|(len, _)| specificity > *len) {
                 best = Some((specificity, mod_name));
@@ -897,6 +898,26 @@ fn collect_fnl_filepaths(root: Url) -> Result<Vec<Url>> {
         }
     }
     Ok(paths)
+}
+
+/// Derives a Fennel module name from a path relative to a workspace root.
+///
+/// Returns `None` when the path carries no module component (e.g. the root's
+/// own `init.fnl`).
+///
+/// Separators are normalized *before* the prefix/suffix rules are applied.
+/// `Path::to_string_lossy` yields backslashes on Windows, so stripping a
+/// literal `"fnl/"` first would silently never match there and yield module
+/// names like `fnl.foo` instead of `foo`.
+pub(crate) fn module_name_from_relative(rel: &std::path::Path) -> Option<String> {
+    let normalized = rel.to_string_lossy().replace('\\', "/");
+    let stripped = normalized.strip_prefix("fnl/").unwrap_or(&normalized);
+    let stripped = stripped.strip_suffix(".fnl").unwrap_or(stripped);
+    let stripped = stripped.strip_suffix("/init").unwrap_or(stripped);
+    if stripped.is_empty() {
+        return None;
+    }
+    Some(stripped.replace('/', "."))
 }
 
 #[cfg(test)]

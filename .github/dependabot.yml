@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Unlike a published library, this project ships a lockfile and users
+    # install via `cargo install --git`, so they build from *our* resolved
+    # versions. Patch bumps therefore do reach users and are worth seeing.
+    # Minor bumps are kept visible but grouped into a single weekly PR to
+    # keep the noise down.
+    commit-message:
+      prefix: "deps"
+    groups:
+      cargo-patch:
+        update-types:
+          - "version-update:semver-patch"
+      cargo-minor:
+        update-types:
+          - "version-update:semver-minor"

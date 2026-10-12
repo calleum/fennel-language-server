@@ -100,10 +100,13 @@ fn indent(out: &mut String, level: usize) {
 }
 
 /// True when a space should separate the text about to be appended from what
-/// is already on the line. A line ending in an opening delimiter is a call
-/// position, where a space would be wrong.
+/// is already on the line.
+///
+/// A line ending in an opening delimiter or in `.` / `:` is a *field access*
+/// position (`string.format`, `obj:method`), where a space would change the
+/// meaning — `(string .format x)` does not parse.
 fn needs_space(line: &str) -> bool {
-    !line.is_empty() && !line.ends_with([' ', '(', '{', '['])
+    !line.is_empty() && !line.ends_with([' ', '(', '{', '[', '.', ':'])
 }
 
 struct Formatter<'a> {
@@ -148,7 +151,16 @@ impl Formatter<'_> {
                 indent(self.out, level);
                 self.out.push_str(token.text().trim());
             }
-            _ => self.append_text(token.text(), line),
+            _ => {
+                // Field and method accessors already carry their leading `.`
+                // or `:` — appending them must not be separated by a space, or
+                // `(string.format x)` becomes the unparseable `(string .format x)`.
+                if matches!(token.kind(), SYMBOL_FIELD | SYMBOL_METHOD) {
+                    line.push_str(token.text());
+                } else {
+                    self.append_text(token.text(), line);
+                }
+            }
         }
     }
 
@@ -234,10 +246,15 @@ impl Formatter<'_> {
                     WHITESPACE => {}
                     COMMENT => *bail = true,
                     _ => {
-                        if needs_space(out) {
-                            out.push(' ');
+                        // Field/method tokens carry their own leading `.`/`:`.
+                        if matches!(t.kind(), SYMBOL_FIELD | SYMBOL_METHOD) {
+                            out.push_str(t.text());
+                        } else {
+                            if needs_space(out) {
+                                out.push(' ');
+                            }
+                            out.push_str(t.text());
                         }
-                        out.push_str(t.text());
                     }
                 },
                 rowan::NodeOrToken::Node(n) => {
@@ -384,6 +401,33 @@ mod tests {
     fn comments_are_preserved() {
         let out = format("-- a note\n(print 1)").expect("should format");
         assert!(out.contains("-- a note"), "comment lost: {out:?}");
+    }
+
+    /// Field and method accessors must keep their `.`/`:` attached. Emitting
+    /// `(string .format x)` produces code that no longer parses — a property
+    /// test found this after the example tests had all passed.
+    #[test]
+    fn field_access_stays_attached() {
+        for input in ["(string.format \"hi\" x)", "(string.rep 1 2)", "(obj:method 1)", "(a.b.c 1)"]
+        {
+            let out = format(input).unwrap_or_else(|| panic!("declined: {input:?}"));
+            assert_eq!(out.trim_end(), input, "field access mangled in {input:?}");
+
+            // And the output must still parse.
+            let ast = fennel_parser::parse(out.chars(), Default::default());
+            let syntax_errors = ast
+                .errors()
+                .filter(|e| {
+                    matches!(
+                        e.kind,
+                        fennel_parser::ErrorKind::Unexpected(_)
+                            | fennel_parser::ErrorKind::Dismatched
+                            | fennel_parser::ErrorKind::UnexpectedEof
+                    )
+                })
+                .count();
+            assert_eq!(syntax_errors, 0, "output does not parse:\n{out}");
+        }
     }
 
     /// String contents are opaque.
