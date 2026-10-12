@@ -18,6 +18,19 @@ use crate::{
     syntax::lists::*,
 };
 
+/// Maximum list nesting depth the parser will descend into.
+///
+/// Past this depth the parser stops opening new lists and reports the input as
+/// malformed instead of recursing further. Real Fennel code never comes close:
+/// this bound exists because unbounded nesting is hostile input, not because
+/// legitimate programs need the depth.
+///
+/// Without it, a file containing thousands of unmatched `(` costs seconds of
+/// CPU (the error-recovery and error-suppression passes are quadratic in
+/// depth) and eventually aborts the whole process with a stack overflow —
+/// which, in a language server, takes down every other feature with it.
+pub const MAX_NESTING_DEPTH: usize = 128;
+
 pub struct Parser<'p> {
     rule_stack: Vec<Rule>,
     token_queue: VecDeque<Token>,
@@ -25,6 +38,9 @@ pub struct Parser<'p> {
     lexer: Lexer<'p>,
     builder: GreenNodeBuilder<'p>,
     errors: Vec<Error>,
+    /// Nesting depth of lists currently open, tracked independently of
+    /// `rule_stack` (which also holds non-list rules).
+    nesting_depth: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -42,6 +58,7 @@ impl<'p> Parser<'p> {
             lexer: Lexer::new(Box::new(source)),
             builder: Default::default(),
             errors: Default::default(),
+            nesting_depth: 0,
         }
     }
 
@@ -107,6 +124,18 @@ impl<'p> Parser<'p> {
         while !self.rule_stack.is_empty() {
             let cur_rule = *self.cur_rule();
             let cur_token = self.lookahead().to_owned();
+
+            // Refuse to open a list deeper than MAX_NESTING_DEPTH. Without this
+            // a file of thousands of `(` aborts the process via stack overflow
+            // and burns quadratic time doing it.
+            if self.nesting_depth >= MAX_NESTING_DEPTH
+                && matches!(cur_token.kind, L_PAREN | L_BRACKET | L_BRACE)
+            {
+                self.errors.push(Error::new(text_range(&cur_token.range), UnexpectedEof));
+                self.step();
+                continue;
+            }
+
             self.parse_inner(cur_rule, cur_token);
         }
 
@@ -120,7 +149,10 @@ impl<'p> Parser<'p> {
         // Must close node as soon as possible.
         // It ensures the last child of syntax node is
         // not a comment or whitespace.
-        if let Close(_) = cur_rule.notation {
+        if let Close(range) = cur_rule.notation {
+            if range.is_some() {
+                self.nesting_depth = self.nesting_depth.saturating_sub(1);
+            }
             self.builder.finish_node();
             self.rule_stack.pop();
             return;
@@ -732,6 +764,7 @@ impl<'p> Parser<'p> {
         let mut rules = rules.peekable();
         let first_rule = rules.peek().expect("rules iterator is non-empty");
         let range = if L_DELIMITERS.contains(&first_rule.expect) {
+            self.nesting_depth += 1;
             Some(text_range(&cur_token.range))
         } else {
             None
