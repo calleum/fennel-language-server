@@ -84,7 +84,6 @@ Editing
 - [x] `Code Action` — diagnostic quick fixes and refactors
 - [x] `Document Highlight`
 - [x] `Inlay Hints` — parameter names at call sites
-- [x] `Formatter` — see the caveats below
 
 Symbols and structure
 
@@ -106,20 +105,9 @@ Infrastructure
 - [x] Background workspace indexing
 - [x] File-watcher support, so edits made outside the editor are picked up
 
-### About the formatter
+Not implemented
 
-The formatter is CST-based, so comments and string contents survive. It is
-conservative by design:
-
-- If the document does not parse cleanly, formatting is **declined** — no edits
-  are returned. Rewriting code the server does not understand can turn one typo
-  into another.
-- Formatting is **idempotent**: re-formatting formatted code is a no-op.
-- Forms that fit within 72 columns stay on one line; longer ones break, with
-  the closing delimiter dedented to the opening delimiter's level.
-- Range formatting is not supported. Indentation is only meaningful relative to
-  the enclosing form, so formatting a fragment in isolation is declined rather
-  than guessed at.
+- [ ] `Formatter`
 
 ### Known issues
 
@@ -130,10 +118,8 @@ conservative by design:
   does not infer or check types.
 - **`require-macros` is deprecated.** Use `import-macros` for a clear
   namespace — the server reports `require-macros` as deprecated.
-- **No formatter upstream.** Upstream Fennel does not ship one either, so this
-  formatter is home-grown rather than delegated to an external tool. It is not
-  yet configurable and does not honour the usual editor formatting options
-  (tab width, etc.).
+- **No formatter.** Upstream Fennel does not ship one either, and there are no
+  plans to maintain one here.
 
 ## Contributing
 

@@ -9,7 +9,7 @@
 
 use proptest::prelude::*;
 
-use crate::{formatter, module_name_from_relative};
+use crate::module_name_from_relative;
 
 /// A path segment made of characters that are legal in Fennel module names.
 fn segment() -> impl Strategy<Value = String> {
@@ -60,63 +60,4 @@ proptest! {
         }
     }
 
-    /// Formatting is idempotent: re-formatting formatted code changes nothing.
-    /// Without this, format-on-save rewrites the buffer forever.
-    #[test]
-    fn formatting_is_idempotent(src in src()) {
-        let Some(once) = formatter::format(&src) else { return Ok(()) };
-        let Some(twice) = formatter::format(&once) else {
-            return Err(TestCaseError::fail("formatter declined its own output"));
-        };
-        prop_assert_eq!(twice, once, "not idempotent for {:?}", src);
-    }
-
-    /// Formatting never changes which symbols the file binds.
-    #[test]
-    fn formatting_preserves_bindings(src in src()) {
-        let Some(formatted) = formatter::format(&src) else { return Ok(()) };
-        let bindings = |s: &str| {
-            let ast = fennel_parser::parse(s.chars(), Default::default());
-            let mut names: Vec<String> =
-                ast.all_l_symbols().map(|x| x.token.text.clone()).collect();
-            names.sort();
-            names.dedup();
-            names
-        };
-        prop_assert_eq!(bindings(&formatted), bindings(&src), "formatting changed bindings");
-    }
-
-    /// Formatted output must always re-parse. A formatter that emits
-    /// unparseable text would break the user's file.
-    #[test]
-    fn formatted_output_reparses(src in src()) {
-        let Some(formatted) = formatter::format(&src) else { return Ok(()) };
-        let ast = fennel_parser::parse(formatted.chars(), Default::default());
-        let syntax_errors = ast.errors().filter(|e| {
-            matches!(
-                e.kind,
-                fennel_parser::ErrorKind::Unexpected(_)
-                    | fennel_parser::ErrorKind::Dismatched
-                    | fennel_parser::ErrorKind::UnexpectedEof
-            )
-        }).count();
-        prop_assert_eq!(syntax_errors, 0, "formatted output does not parse:\n{}", formatted);
-    }
-}
-
-/// Well-formed source built from small forms.
-fn src() -> impl Strategy<Value = String> {
-    let form = prop_oneof![
-        Just("(local x 1)".to_string()),
-        Just("(print x)".to_string()),
-        Just("(fn f [a b] (+ a b))".to_string()),
-        Just("{:a 1 :b 2}".to_string()),
-        Just("[1 2 3]".to_string()),
-        Just("(string.format \"hi %s\" x)".to_string()),
-    ];
-    prop::collection::vec(form, 0..4).prop_map(|forms| {
-        let mut s = forms.join("\n");
-        s.push('\n');
-        s
-    })
 }
