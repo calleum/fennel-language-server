@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod formatter;
 mod helper;
 mod providers;
 mod semantic_tokens;
@@ -131,6 +132,20 @@ impl tower_lsp::LanguageServer for Backend {
         params: ExecuteCommandParams,
     ) -> tower_lsp::jsonrpc::Result<Option<serde_json::Value>> {
         self.execute_command(params).await
+    }
+
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<Vec<TextEdit>>> {
+        self.formatting(params).await
+    }
+
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<Vec<TextEdit>>> {
+        self.range_formatting(params).await
     }
 
     async fn folding_range(
@@ -275,6 +290,7 @@ impl tower_lsp::LanguageServer for Backend {
                     ..Default::default()
                 }),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),

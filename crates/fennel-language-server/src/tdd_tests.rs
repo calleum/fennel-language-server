@@ -907,6 +907,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_formatting_rewrites_document() {
+        let mut harness = TestHarness::with_temp_dir();
+        let uri = harness.write_and_open_file("main.fnl", "(local   x    1)\n(print x)");
+
+        let edits = harness.formatting(&uri).await.unwrap().expect("should offer edits");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "(local x 1)\n(print x)\n");
+    }
+
+    /// Already-formatted code must produce no edits, so format-on-save does
+    /// not churn the buffer.
+    #[tokio::test]
+    async fn test_formatting_is_noop_when_already_formatted() {
+        let mut harness = TestHarness::with_temp_dir();
+        let uri = harness.write_and_open_file("main.fnl", "(local x 1)\n");
+
+        let edits = harness.formatting(&uri).await.unwrap().expect("should return a result");
+        assert!(edits.is_empty(), "expected no edits, got {edits:?}");
+    }
+
+    /// Unparseable input must be declined, not reformatted.
+    #[tokio::test]
+    async fn test_formatting_declines_broken_input() {
+        let mut harness = TestHarness::with_temp_dir();
+        let uri = harness.write_and_open_file("main.fnl", "(local   x");
+
+        let edits = harness.formatting(&uri).await.unwrap();
+        assert!(edits.is_none(), "broken input should not be formatted, got {edits:?}");
+    }
+
+    #[tokio::test]
     async fn test_auto_import_completion() {
         let mut harness = TestHarness::with_temp_dir();
         let (_math_path, _math_url) =

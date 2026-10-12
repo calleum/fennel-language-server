@@ -321,6 +321,15 @@ impl TestHarness {
         self.backend.code_action(params).await
     }
 
+    pub async fn formatting(&self, uri: &Url) -> Result<Option<Vec<TextEdit>>> {
+        let params = DocumentFormattingParams {
+            text_document: TextDocumentIdentifier::new(uri.clone()),
+            options: FormattingOptions::default(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        self.backend.formatting(params).await
+    }
+
     pub async fn execute_command(
         &self,
         command: &str,

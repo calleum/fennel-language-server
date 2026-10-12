@@ -24,13 +24,23 @@ pub(crate) struct Lexer<'a> {
 
     current: String,
     peek: Option<char>,
+    /// Chars taken from `source` during lookahead and not yet consumed.
+    pending: Vec<char>,
 }
 
 impl<'a> Lexer<'a> {
     pub(crate) fn new(mut source: Box<dyn Iterator<Item = char> + 'a>) -> Self {
         let peek = source.next();
 
-        Self { source, offset: 0, current: String::new(), peek }
+        Self { source, offset: 0, current: String::new(), peek, pending: Vec::new() }
+    }
+
+    /// Turns the accumulated `current` text into a token and resets state.
+    fn finish_token(&mut self, kind: SyntaxKind) -> Token {
+        let text = std::mem::take(&mut self.current);
+        let start = self.offset;
+        self.offset += text.len();
+        Token { kind, text, range: start..self.offset }
     }
 }
 
@@ -94,7 +104,52 @@ impl<'a> Iterator for Lexer<'a> {
         let head_kind = kind_by_char(head);
         let token_kind = match head_kind {
             TokenKind::Word => {
-                for c in self.source.by_ref() {
+                // `--` starts a line comment in Lua and Fennel. Without this it
+                // lexes as a symbol, so the rest of the line is parsed as code
+                // and every comment produces bogus diagnostics.
+                //
+                // Only a word starting with `-` can be a comment. The check has
+                // to happen before the scan loop below, which would otherwise
+                // consume the comment body as word characters.
+                if self.current == "-" {
+                    // A `-` followed by a digit is a negative number, not a
+                    // comment. Take one char and put it back if it is not a
+                    // second dash, so negative literals lex unchanged.
+                    let after = self.source.next();
+                    if after == Some('-') {
+                        self.current.push('-');
+                        // Consume to end of line, leaving the newline in
+                        // `peek` so it stays a separate whitespace token.
+                        loop {
+                            match self.source.next() {
+                                Some(c @ ('\n' | '\r')) => {
+                                    self.peek = Some(c);
+                                    break;
+                                }
+                                Some(c) => self.current.push(c),
+                                None => break,
+                            }
+                        }
+                        return Some(self.finish_token(SyntaxKind::COMMENT));
+                    }
+                    // Not a comment: hand the char to the scan loop below via
+                    // the pending-char slot.
+                    if let Some(c) = after {
+                        self.pending.push(c);
+                    }
+                }
+
+                // `pending` holds a char taken from the source during the `--`
+                // lookahead that the scan loop must see first.
+                let mut first_pending = self.pending.pop();
+                loop {
+                    let c = match first_pending.take() {
+                        Some(c) => c,
+                        None => match self.source.next() {
+                            Some(c) => c,
+                            None => break,
+                        },
+                    };
                     let cur_kind = kind_by_char(c);
                     if head_kind == cur_kind || cur_kind == TokenKind::Hash {
                         self.current.push(c);
@@ -364,6 +419,38 @@ mod tests {
                 Token::new(SyntaxKind::COLON_STRING, ":logos", 7..13),
                 Token::new(SyntaxKind::COMMENT, "; this is comment)\n", 13..32),
                 Token::new(SyntaxKind::R_PAREN, ")", 33..34),
+            ],
+        );
+    }
+
+    /// `--` is a line comment in Lua and Fennel. Before this was handled it
+    /// lexed as a symbol, so the rest of the line parsed as code and every
+    /// comment produced spurious diagnostics.
+    #[test]
+    fn dash_comment() {
+        // `assert_lex` skips whitespace tokens, so only real tokens are listed.
+        assert_lex(
+            "-- a comment\n(print 1)",
+            &[
+                Token::new(SyntaxKind::COMMENT, "-- a comment", 0..12),
+                Token::new(SyntaxKind::L_PAREN, "(", 13..14),
+                Token::new(SyntaxKind::SYMBOL, "print", 14..19),
+                Token::new(SyntaxKind::INTEGER, "1", 20..21),
+                Token::new(SyntaxKind::R_PAREN, ")", 21..22),
+            ],
+        );
+    }
+
+    /// A `-` that is not followed by another dash must keep lexing as before:
+    /// negative numbers in particular.
+    #[test]
+    fn negative_numbers_are_not_comments() {
+        assert_lex("-1.5", &[Token::new(SyntaxKind::FLOAT, "-1.5", 0..4)]);
+        assert_lex(
+            "- 1",
+            &[
+                Token::new(SyntaxKind::OPERATOR, "-", 0..1),
+                Token::new(SyntaxKind::INTEGER, "1", 2..3),
             ],
         );
     }

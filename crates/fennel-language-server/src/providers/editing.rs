@@ -6,9 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use fennel_parser::{SyntaxKind, SyntaxNode};
+use ropey::Rope;
 use tower_lsp::{jsonrpc::Error, lsp_types::*};
 
-use crate::{Backend, helper::*, view};
+use crate::{Backend, formatter, helper::*, view};
 
 /// Inherent methods, grouped by feature area. The single
 /// `LanguageServer` impl in `main.rs` forwards to these.
@@ -371,4 +372,59 @@ impl Backend {
 
         Ok(Some(hints))
     }
+
+    /// Formats the whole document.
+    ///
+    /// Formatting is declined when the source does not parse cleanly: a
+    /// formatter that rewrites code it does not understand can turn a typo
+    /// into a different typo, and the user's buffer is the source of truth.
+    pub(crate) async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>, Error> {
+        let uri = params.text_document.uri;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+        let text = doc.to_string();
+
+        let Some(formatted) = formatter::format(&text) else {
+            return Ok(None);
+        };
+
+        if formatted == text {
+            // No change: returning an empty edit avoids marking the buffer
+            // dirty in the client.
+            return Ok(Some(vec![]));
+        }
+
+        let range = Range::new(Position::new(0, 0), position_of_end(&doc));
+        Ok(Some(vec![TextEdit::new(range, formatted)]))
+    }
+
+    pub(crate) async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>, Error> {
+        let uri = params.text_document.uri;
+        let doc = self.doc_map.get(&uri).ok_or_else(Error::invalid_request)?;
+
+        // Formatting a fragment in isolation is not meaningful here: the
+        // formatter works on whole documents so it can re-indent relative to
+        // the enclosing form. Decline explicitly rather than corrupting text.
+        let _ = &doc;
+        self.client
+            .log_message(
+                MessageType::INFO,
+                "range formatting is not supported; format the whole document instead",
+            )
+            .await;
+        Ok(None)
+    }
+}
+
+/// End-of-document position, used for whole-document text edits.
+fn position_of_end(doc: &Rope) -> Position {
+    let line = doc.len_lines().saturating_sub(1);
+    let line_start = doc.line_to_char(line);
+    let character = doc.len_chars().saturating_sub(line_start);
+    Position::new(line as u32, character as u32)
 }
