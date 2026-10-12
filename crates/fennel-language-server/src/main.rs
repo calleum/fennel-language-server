@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+pub(crate) mod flsproject;
 mod helper;
 mod providers;
 mod semantic_tokens;
@@ -311,12 +312,32 @@ impl tower_lsp::LanguageServer for Backend {
     }
 }
 
+pub(crate) fn is_flsproject(uri: &Url) -> bool {
+    let path = uri.path();
+    path.ends_with("/flsproject.fnl") || path.ends_with("flsproject.fnl")
+}
+
 impl Backend {
+    pub(crate) fn supports_workspace_configuration(&self) -> bool {
+        self.client_caps
+            .read()
+            .ok()
+            .map(|caps| caps.workspace.as_ref().and_then(|w| w.configuration).unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn is_lint_enabled(&self, lint: &str) -> bool {
+        self.config.read().map(|c| c.is_lint_enabled(lint)).unwrap_or(true)
+    }
+
     pub(crate) fn collect_globals(&self) -> HashSet<String> {
         let mut globals = HashSet::new();
         if let Ok(config) = self.config.read() {
             for global in &config.fennel.diagnostics.globals {
                 globals.insert(global.clone());
+            }
+            for global in config.fls.extra_globals.split_whitespace() {
+                globals.insert(global.to_string());
             }
         }
         let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
@@ -487,6 +508,29 @@ impl Backend {
         ast: &Ast,
         on_save_or_open: bool,
     ) -> Vec<Diagnostic> {
+        if is_flsproject(uri) {
+            if !self.is_lint_enabled("invalid-flsproject-settings") {
+                return Vec::new();
+            }
+            let (_, errors) = flsproject::parse_and_validate_flsproject(&doc.to_string());
+            return errors
+                .into_iter()
+                .filter_map(|error| {
+                    lsp_range(doc, error.range).ok().map(|range| {
+                        Diagnostic::new(
+                            range,
+                            Some(DiagnosticSeverity::WARNING),
+                            None,
+                            Some("Fennel Diagnostics".into()),
+                            error.message,
+                            None,
+                            None,
+                        )
+                    })
+                })
+                .collect();
+        }
+
         if on_save_or_open {
             self.on_save_or_open_errors
                 .insert(uri.clone(), ast.on_save_errors().cloned().collect());
@@ -504,6 +548,13 @@ impl Backend {
 
         errors
             .into_iter()
+            .filter(|error| {
+                if error.kind == fennel_parser::ErrorKind::Unused {
+                    self.is_lint_enabled("unused-definition")
+                } else {
+                    true
+                }
+            })
             .filter_map(|error| {
                 lsp_range(doc, error.range).ok().map(|range| {
                     let (message, severity) = view::error(error.kind);
@@ -632,7 +683,82 @@ impl Backend {
     }
 
     pub(crate) fn find_file(&self, rel: &Url, path: PathBuf) -> Option<Url> {
-        path.to_str()?;
+        let mod_str = path.to_str()?;
+
+        let (fennel_path, macro_path) = if let Ok(config) = self.config.read() {
+            (config.fls.fennel_path.clone(), config.fls.macro_path.clone())
+        } else {
+            (
+                "./?.fnl;./?/init.fnl;src/?.fnl;src/?/init.fnl".to_string(),
+                "./?.fnlm;./?/init.fnlm;./?.fnl;./?/init-macros.fnl;./?/init.fnl;src/?.fnlm;src/?/init.fnlm;src/?.fnl;src/?/init-macros.fnl;src/?/init.fnl".to_string(),
+            )
+        };
+
+        let file_exists = |url: &Url| -> bool {
+            if self.doc_map.contains_key(url) {
+                return true;
+            }
+            url.to_file_path()
+                .ok()
+                .is_some_and(|p| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false))
+        };
+
+        let resolve_pattern = |base_url: &Url, pattern: &str| -> Option<Url> {
+            if pattern.is_empty() {
+                return None;
+            }
+            let substituted = pattern.replace('?', mod_str);
+            let sub_path = PathBuf::from(&substituted);
+            if sub_path.is_absolute() {
+                let url = Url::from_file_path(&sub_path).ok()?;
+                if file_exists(&url) {
+                    return Some(url);
+                }
+            } else if let Ok(base_path) = base_url.to_file_path() {
+                let joined = base_path.join(sub_path);
+                let url = Url::from_file_path(joined).ok()?;
+                if file_exists(&url) {
+                    return Some(url);
+                }
+            }
+            None
+        };
+
+        let mut candidate_roots: Vec<Url> = Vec::new();
+        let mut matching_ws: Vec<Url> = self
+            .workspace_map
+            .iter()
+            .filter(|r| rel.path().starts_with(r.key().path()))
+            .map(|r| r.key().clone())
+            .collect();
+        if !matching_ws.is_empty() {
+            candidate_roots.append(&mut matching_ws);
+        } else {
+            candidate_roots.extend(self.workspace_map.iter().map(|r| r.key().clone()));
+        }
+        if let Ok(rel_path) = rel.to_file_path()
+            && let Some(parent) = rel_path.parent()
+            && let Ok(parent_url) = Url::from_directory_path(parent)
+            && !candidate_roots.contains(&parent_url)
+        {
+            candidate_roots.push(parent_url);
+        }
+
+        for root in &candidate_roots {
+            for pattern in fennel_path.split(';') {
+                if let Some(url) = resolve_pattern(root, pattern) {
+                    return Some(url);
+                }
+            }
+        }
+
+        for root in &candidate_roots {
+            for pattern in macro_path.split(';') {
+                if let Some(url) = resolve_pattern(root, pattern) {
+                    return Some(url);
+                }
+            }
+        }
 
         let check_exist = |rel: &Url, ext: &str, init: bool| -> Option<Url> {
             let path = if init { path.join("init") } else { path.clone() };
@@ -641,10 +767,7 @@ impl Backend {
             // a real path first. For non-file URLs this yields `None`, same as
             // the failed metadata call did before.
             if let Ok(url) = rel.join(path.with_extension(ext).to_str()?)
-                && url
-                    .to_file_path()
-                    .ok()
-                    .is_some_and(|p| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false))
+                && file_exists(&url)
             {
                 return Some(url);
             }

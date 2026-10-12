@@ -389,6 +389,47 @@ impl TestHarness {
         };
         self.backend.outgoing_calls(params).await
     }
+
+    pub fn get_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
+        let doc = self.backend.doc_map.get(uri).expect("doc should exist");
+        if crate::is_flsproject(uri) {
+            let ast = fennel_parser::parse(doc.to_string().chars(), self.backend.collect_globals());
+            self.backend.compute_diagnostics(&doc, uri, &ast, true)
+        } else {
+            let ast = self.backend.ast_map.get(uri).expect("ast should exist");
+            self.backend.compute_diagnostics(&doc, uri, &ast, true)
+        }
+    }
+
+    pub async fn did_save_file(&self, uri: &Url) {
+        self.backend
+            .did_save(DidSaveTextDocumentParams {
+                text_document: TextDocumentIdentifier::new(uri.clone()),
+                text: None,
+            })
+            .await;
+    }
+
+    pub async fn did_change_file(&mut self, uri: &Url, new_text: &str) {
+        self.backend
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier::new(uri.clone(), 2),
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: new_text.to_string(),
+                }],
+            })
+            .await;
+    }
+
+    pub async fn reload_flsproject(&self) -> Vec<crate::flsproject::FlsValidationError> {
+        self.backend.reload_flsproject().await
+    }
+
+    pub async fn did_change_configuration(&self, settings: serde_json::Value) {
+        self.backend.did_change_configuration(DidChangeConfigurationParams { settings }).await;
+    }
 }
 
 pub async fn setup_backend(code: &str) -> (Backend, Url) {

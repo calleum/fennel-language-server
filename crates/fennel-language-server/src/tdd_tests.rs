@@ -1051,4 +1051,158 @@ mod tests {
         let first_edit = edits.first().expect("edit should exist");
         assert_eq!(first_edit.new_text, "(foo x)");
     }
+
+    #[tokio::test]
+    async fn test_flsproject_path() {
+        let mut harness = TestHarness::with_temp_dir();
+        harness
+            .write_file("modname.fnl", "{:this-is-in-modname {:this :one :isnt :on :the :path}}");
+        harness.write_file(
+            "modname/modname/modname/modname.fnl",
+            "(fn this-is-in-modname [] nil) {: this-is-in-modname}",
+        );
+        harness.write_file("flsproject.fnl", "{:fennel-path \"./?/?/?/?.fnl\"}");
+        let main_url = harness.write_and_open_file(
+            "main.fnl",
+            "(local {: this-is-in-modname} (require :modname))\n(this-is-in-modname)",
+        );
+
+        harness.initialize().await.unwrap();
+
+        let response = harness
+            .goto_definition(&main_url, 0, 15)
+            .await
+            .unwrap()
+            .expect("should return definition");
+
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("modname/modname/modname/modname.fnl"),
+                    "expected definition in modname/modname/modname/modname.fnl, got {}",
+                    loc.uri
+                );
+            }
+            _ => panic!("expected scalar definition location"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flsproject_extra_globals() {
+        let mut harness = TestHarness::with_temp_dir();
+        let main_url = harness.write_and_open_file("main.fnl", "(foo-100 bar :baz)");
+
+        harness.initialize().await.unwrap();
+        let bad_diags = harness.get_diagnostics(&main_url);
+        assert!(!bad_diags.is_empty(), "expected diagnostics without extra-globals");
+
+        harness.write_file("flsproject.fnl", "{:extra-globals \"foo-100 bar\"}");
+        harness.reload_flsproject().await;
+
+        let good_diags = harness.get_diagnostics(&main_url);
+        assert!(
+            good_diags.is_empty(),
+            "expected 0 diagnostics with extra-globals, got: {:?}",
+            good_diags
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flsproject_lints() {
+        let mut harness = TestHarness::with_temp_dir();
+        let main_url = harness.write_and_open_file("main.fnl", "(local x 10)");
+
+        harness.initialize().await.unwrap();
+        let bad_diags = harness.get_diagnostics(&main_url);
+        assert!(!bad_diags.is_empty(), "expected unused diagnostic without config");
+
+        harness.write_file("flsproject.fnl", "{:lints {:unused-definition false}}");
+        harness.reload_flsproject().await;
+
+        let good_diags = harness.get_diagnostics(&main_url);
+        assert!(
+            good_diags.is_empty(),
+            "expected unused diagnostic to be suppressed by {{:unused-definition false}}, got: {:?}",
+            good_diags
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flsproject_editing_settings() {
+        let mut harness = TestHarness::with_temp_dir();
+        let main_url = harness.write_and_open_file("main.fnl", "(my-new-global)");
+        let fls_url = harness.write_and_open_file("flsproject.fnl", "{}");
+
+        harness.initialize().await.unwrap();
+        let bad_diags = harness.get_diagnostics(&main_url);
+        assert!(!bad_diags.is_empty());
+
+        harness.did_change_file(&fls_url, "{:extra-globals \"my-new-global\"}").await;
+        harness.did_save_file(&fls_url).await;
+
+        let good_diags = harness.get_diagnostics(&main_url);
+        assert!(
+            good_diags.is_empty(),
+            "expected diagnostics to be cleared after saving flsproject.fnl"
+        );
+        assert_eq!(harness.backend.config.read().unwrap().fls.extra_globals, "my-new-global");
+    }
+
+    #[tokio::test]
+    async fn test_flsproject_config_validation() {
+        let mut harness = TestHarness::with_temp_dir();
+        let fls_url = harness.write_and_open_file(
+            "flsproject.fnl",
+            "{:lua-version \"lua5.0\"\n :libraries {:nasilemak true}}",
+        );
+
+        let errors = harness.reload_flsproject().await;
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|e| e.message.contains("doesn't know about lua version lua5.0")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Could not find docset for library nasilemak"))
+        );
+
+        let diags = harness.get_diagnostics(&fls_url);
+        assert_eq!(diags.len(), 2);
+        assert!(diags.iter().any(|d| d.message.contains("doesn't know about lua version lua5.0")));
+        assert!(
+            diags.iter().any(|d| d.message.contains("Could not find docset for library nasilemak"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_pull() {
+        let harness = TestHarness::new();
+        assert!(!harness.backend.supports_workspace_configuration());
+
+        *harness.backend.client_caps.write().unwrap() = ClientCapabilities {
+            workspace: Some(WorkspaceClientCapabilities {
+                configuration: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(harness.backend.supports_workspace_configuration());
+
+        let configs = vec![
+            serde_json::json!({
+                "workspace": { "library": ["/tmp/test-lib"] },
+                "diagnostics": { "globals": ["pulled_global_1"] }
+            }),
+            serde_json::json!({
+                "extra-globals": "pulled_global_2",
+                "lua-version": "lua53"
+            }),
+        ];
+
+        harness.backend.apply_pulled_configuration(&configs).await;
+
+        let config = harness.backend.config.read().unwrap();
+        assert_eq!(config.fennel.diagnostics.globals, vec!["pulled_global_1"]);
+        assert_eq!(config.fls.extra_globals, "pulled_global_2");
+        assert_eq!(config.fls.lua_version, "lua53");
+    }
 }

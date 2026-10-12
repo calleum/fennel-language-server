@@ -2,9 +2,18 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, de::Error};
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+use crate::flsproject::FlsProjectConfig;
+
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Configuration {
     pub(crate) fennel: Fennel,
+    pub(crate) fls: FlsProjectConfig,
+}
+
+impl Configuration {
+    pub(crate) fn is_lint_enabled(&self, lint: &str) -> bool {
+        self.fls.lints.get(lint).copied().unwrap_or(true)
+    }
 }
 
 impl<'de> Deserialize<'de> for Configuration {
@@ -13,19 +22,33 @@ impl<'de> Deserialize<'de> for Configuration {
         D: Deserializer<'de>,
     {
         let v: serde_json::Value = Deserialize::deserialize(deserializer)?;
-        if v.get("fennel").is_some() {
-            #[derive(Deserialize)]
-            struct Temp {
-                #[serde(default)]
-                fennel: Fennel,
+        let mut config = Configuration::default();
+
+        if let Some(fennel_val) = v.get("fennel") {
+            if let Ok(fennel) = Fennel::deserialize(fennel_val.clone()) {
+                config.fennel = fennel;
             }
-            let temp = Temp::deserialize(v).map_err(D::Error::custom)?;
-            Ok(Configuration { fennel: temp.fennel })
-        } else {
-            // Try to deserialize directly as Fennel if the prefix is missing
-            let fennel = Fennel::deserialize(v).map_err(D::Error::custom)?;
-            Ok(Configuration { fennel })
+        } else if let Ok(fennel) = Fennel::deserialize(v.clone()) {
+            config.fennel = fennel;
         }
+
+        if let Some(fls_val) = v.get("fennel-ls").or_else(|| v.get("fennelLs")) {
+            if let Ok(fls) = FlsProjectConfig::deserialize(fls_val.clone()) {
+                config.fls = fls;
+            }
+        } else if (v.get("fennel-path").is_some()
+            || v.get("fennelPath").is_some()
+            || v.get("extra-globals").is_some()
+            || v.get("extraGlobals").is_some()
+            || v.get("lua-version").is_some()
+            || v.get("luaVersion").is_some()
+            || v.get("lints").is_some())
+            && let Ok(fls) = FlsProjectConfig::deserialize(v.clone())
+        {
+            config.fls = fls;
+        }
+
+        Ok(config)
     }
 }
 
