@@ -1,0 +1,9 @@
+# Line-ending policy.
+#
+# The repo is uniformly LF (see `git ls-files --eol`). The entries below pin
+# files that are consumed verbatim via `include_str!` to LF on checkout: if
+# git converts them to CRLF (the default on Windows runners), byte-exact
+# comparisons like `parser::tests::parse_chunk` fail, and stub offsets shift.
+
+crates/fennel-parser/testdata/** text eol=lf
+stubs/** text eol=lf
