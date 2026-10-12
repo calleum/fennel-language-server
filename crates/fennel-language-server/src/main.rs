@@ -636,8 +636,15 @@ impl Backend {
 
         let check_exist = |rel: &Url, ext: &str, init: bool| -> Option<Url> {
             let path = if init { path.join("init") } else { path.clone() };
+            // `Url::path()` is not a filesystem path: on Windows a file URL's
+            // path is `/C:/...`, which `std::fs::metadata` rejects. Convert to
+            // a real path first. For non-file URLs this yields `None`, same as
+            // the failed metadata call did before.
             if let Ok(url) = rel.join(path.with_extension(ext).to_str()?)
-                && std::fs::metadata(url.path()).map(|m| m.is_file()).unwrap_or(false)
+                && url
+                    .to_file_path()
+                    .ok()
+                    .is_some_and(|p| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false))
             {
                 return Some(url);
             }
