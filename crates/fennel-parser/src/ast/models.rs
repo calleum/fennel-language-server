@@ -115,7 +115,11 @@ pub enum SpecialKind {
 
 impl LSymbol {
     pub(crate) fn contains_token(&self, r_symbol: &Token) -> bool {
-        self.token.text == r_symbol.text && self.scope.range.contains_range(r_symbol.range)
+        self.contains_token_parts(&r_symbol.text, r_symbol.range)
+    }
+
+    pub(crate) fn contains_token_parts(&self, r_text: &str, r_range: TextRange) -> bool {
+        self.token.text == r_text && self.scope.range.contains_range(r_range)
     }
 }
 
@@ -129,7 +133,16 @@ impl LSymbols {
     }
 
     pub(crate) fn nearest(&self, token: &Token) -> Option<&LSymbol> {
-        self.range(token.range.start().into()).find(|l_symbol| l_symbol.contains_token(token))
+        self.nearest_by_name_and_range(&token.text, token.range)
+    }
+
+    pub(crate) fn nearest_by_name_and_range(
+        &self,
+        name: &str,
+        range: TextRange,
+    ) -> Option<&LSymbol> {
+        let offset: u32 = range.start().into();
+        self.range(offset).find(|l_symbol| l_symbol.contains_token_parts(name, range))
     }
 
     pub(crate) fn get(&self, start: u32) -> Option<&LSymbol> {

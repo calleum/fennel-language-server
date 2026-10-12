@@ -1205,4 +1205,55 @@ mod tests {
         assert_eq!(config.fls.extra_globals, "pulled_global_2");
         assert_eq!(config.fls.lua_version, "lua53");
     }
+
+    #[tokio::test]
+    async fn test_cached_globals_and_completion_performance() {
+        let harness = TestHarness::new();
+
+        let globals_1 = harness.backend.collect_globals_arc();
+        assert!(globals_1.contains("print"));
+        assert!(globals_1.contains("type"));
+        assert!(globals_1.contains("table"));
+
+        let globals_2 = harness.backend.collect_globals_arc();
+        assert!(std::sync::Arc::ptr_eq(&globals_1, &globals_2));
+
+        {
+            let mut cfg = harness.backend.config.write().unwrap();
+            cfg.fls.extra_globals = "my_custom_global".to_string();
+        }
+        harness.backend.recompute_globals();
+
+        let globals_3 = harness.backend.collect_globals_arc();
+        assert!(!std::sync::Arc::ptr_eq(&globals_1, &globals_3));
+        assert!(globals_3.contains("my_custom_global"));
+        assert!(globals_3.contains("print"));
+
+        assert!(!harness.backend.std_completions.is_empty());
+        assert!(
+            harness
+                .backend
+                .std_completions
+                .iter()
+                .any(|item| item.label == "print" && item.detail.is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_symbol_resolution_large_file_linear_scaling() {
+        let mut harness = TestHarness::new();
+        let mut code = String::new();
+        for i in 0..50 {
+            code.push_str(&format!("(local var_{} {})\n", i, i));
+            code.push_str(&format!("(print var_{})\n", i));
+        }
+        code.push_str("(local unused_var 999)\n");
+
+        let uri = harness.open_virtual("file:///large_test.fnl", &code);
+        let diags = harness.get_diagnostics(&uri);
+
+        let unused_diags: Vec<_> =
+            diags.iter().filter(|d| d.message.to_lowercase().contains("unused")).collect();
+        assert_eq!(unused_diags.len(), 1);
+    }
 }

@@ -5,7 +5,7 @@ mod lexer;
 mod parser;
 mod syntax;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 pub use ast::{Action, Ast, AstDocumentSymbol, AstSymbolInformation, Definition, models};
 pub use errors::{Error, ErrorKind};
@@ -32,6 +32,10 @@ pub type SyntaxToken = rowan::SyntaxToken<FennelLanguage>;
 pub type SyntaxElement = rowan::SyntaxElement<FennelLanguage>;
 
 pub fn parse(text: impl Iterator<Item = char>, globals: HashSet<String>) -> Ast {
-    let parsed = parser::Parser::new(Box::new(text)).parse();
-    Ast::new(parsed.green_node, parsed.errors, globals)
+    parse_shared(text, Arc::new(globals))
+}
+
+pub fn parse_shared(text: impl Iterator<Item = char>, globals: Arc<HashSet<String>>) -> Ast {
+    let parsed = parser::Parser::new(text).parse();
+    Ast::new_shared(parsed.green_node, parsed.errors, globals)
 }

@@ -270,29 +270,7 @@ impl Backend {
                 }
             }
 
-            let globals = self.collect_globals();
-            let updated: Vec<Url> = {
-                let mut updated = Vec::new();
-                for mut r in self.ast_map.iter_mut() {
-                    let ast = r.value_mut();
-                    ast.update_globals(globals.iter().cloned().collect());
-                    updated.push(r.key().clone());
-                }
-                updated
-            };
-
-            for uri in updated {
-                let Some(doc) = self.doc_map.get(&uri) else {
-                    continue;
-                };
-                let Some(ast) = self.ast_map.get(&uri) else {
-                    continue;
-                };
-                let diagnostics = self.compute_diagnostics(&doc, &uri, &ast, false);
-                drop(doc);
-                drop(ast);
-                self.client.publish_diagnostics(uri, diagnostics, None).await;
-            }
+            self.refresh_ast_globals_and_diagnostics().await;
 
             return Ok(Some(serde_json::Value::Bool(true)));
         }

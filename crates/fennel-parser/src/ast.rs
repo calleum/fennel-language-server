@@ -14,7 +14,7 @@ pub use self::macro_expand::{
 pub use self::models::{
     Action, AstDocumentSymbol, AstSymbolInformation, Definition, Globals, SuppressErrorKind,
 };
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use rowan::{GreenNode, TextRange, TextSize, ast::AstNode};
 
@@ -28,7 +28,7 @@ use crate::{Error, ErrorKind::*, SyntaxKind, SyntaxNode, lexer, models::Token};
 pub struct Ast {
     pub root: rowan::GreenNode,
 
-    pub globals: HashSet<String>,
+    pub globals: Arc<HashSet<String>>,
     l_symbols: models::LSymbols,
     r_symbols: models::RSymbols,
     pub resources: Vec<PathBuf>,
@@ -45,6 +45,14 @@ impl Ast {
         green_node: GreenNode,
         parser_errors: Vec<Error>,
         user_globals: HashSet<String>,
+    ) -> Self {
+        Self::new_shared(green_node, parser_errors, Arc::new(user_globals))
+    }
+
+    pub fn new_shared(
+        green_node: GreenNode,
+        parser_errors: Vec<Error>,
+        user_globals: Arc<HashSet<String>>,
     ) -> Self {
         let root = Root::cast(SyntaxNode::new_root(green_node.clone()))
             .expect("root node must cast to Root");
@@ -70,14 +78,19 @@ impl Ast {
         let mut other_errors: Vec<Error> =
             root.provide_errors().chain(root.delimiter_whitespace_errors()).collect();
         other_errors.extend(ast.definition_conflict_errors());
-        ast.unused_l_symbol_errors = ast.unused_l_symbols().collect();
+        ast.unused_l_symbol_errors = ast.unused_l_symbols();
         ast.other_errors = other_errors;
         ast.suppressed_errors = root.suppress_errors().collect();
         ast
     }
 
     pub fn update_globals(&mut self, globals: Vec<String>) {
-        self.globals = HashSet::from_iter(globals);
+        self.globals = Arc::new(HashSet::from_iter(globals));
+        self.update_definition_errors();
+    }
+
+    pub fn update_globals_shared(&mut self, globals: Arc<HashSet<String>>) {
+        self.globals = globals;
         self.update_definition_errors();
     }
 
@@ -257,10 +270,10 @@ impl Ast {
 
         let token = root.token_at_offset(TextSize::from(offset)).right_biased()?;
 
-        let l_symbol = self.l_symbol(token.text_range().start().into()).cloned().or_else(|| {
+        let l_symbol = self.l_symbol(token.text_range().start().into()).or_else(|| {
             let r_symbol = self.r_symbol(offset)?;
             let l_symbol = self.l_symbol_by_r(r_symbol);
-            l_symbol.found().cloned()
+            l_symbol.found()
         })?;
 
         let mut ranges = vec![l_symbol.token.range];
@@ -279,10 +292,10 @@ impl Ast {
 
         let token = root.token_at_offset(TextSize::from(offset)).right_biased()?;
 
-        let l_symbol = self.l_symbol(token.text_range().start().into()).cloned().or_else(|| {
+        let l_symbol = self.l_symbol(token.text_range().start().into()).or_else(|| {
             let r_symbol = self.r_symbol(offset)?;
             let l_symbol = self.l_symbol_by_r(r_symbol);
-            l_symbol.found().cloned()
+            l_symbol.found()
         })?;
 
         let def_range = l_symbol.token.range;
@@ -539,15 +552,15 @@ impl Ast {
                 .token_at_offset(r_symbol_range.start())
                 .right_biased()
                 .expect("offset has a token");
-            let text = token.text().to_owned();
-            let ref_l_symbol = self
+            let text = token.text();
+            let ref_value = self
                 .l_symbols
-                .nearest(&models::Token { text: text.clone(), range: *r_symbol_range })
-                .cloned();
+                .nearest_by_name_and_range(text, *r_symbol_range)
+                .map(|s| s.value.clone());
             let v = self.l_symbols.0.get_mut(key).expect("key exists in l_symbols");
-            if let Some(l_symbol) = ref_l_symbol {
-                v.value = l_symbol.value;
-            } else if self.globals.contains(&text) {
+            if let Some(val) = ref_value {
+                v.value = val;
+            } else if self.globals.contains(text) {
                 v.value.kind = models::ValueKind::Module;
             }
         })
@@ -607,19 +620,35 @@ impl Ast {
             .flatten()
     }
 
-    fn unused_l_symbols(&self) -> impl Iterator<Item = Error> + '_ {
-        self.l_symbols.0.values().filter_map(|l_symbol| {
-            if !l_symbol.token.text.starts_with('_')
-                && l_symbol.scope.kind != models::ScopeKind::Global
-                && l_symbol.token.text != "..."
-                && !l_symbol.token.text.contains('.')
-                && !self.r_symbols.iter().any(|r_symbol| l_symbol.contains_token(&r_symbol.token))
-            {
-                Some(Error::new(l_symbol.token.range, Unused))
-            } else {
+    fn unused_l_symbols(&self) -> Vec<Error> {
+        let mut r_by_name: std::collections::HashMap<&str, Vec<TextRange>> =
+            std::collections::HashMap::with_capacity(self.r_symbols.len());
+        for r_symbol in &self.r_symbols {
+            r_by_name.entry(r_symbol.token.text.as_str()).or_default().push(r_symbol.token.range);
+        }
+
+        self.l_symbols
+            .0
+            .values()
+            .filter_map(|l_symbol| {
+                if !l_symbol.token.text.starts_with('_')
+                    && l_symbol.scope.kind != models::ScopeKind::Global
+                    && l_symbol.token.text != "..."
+                    && !l_symbol.token.text.contains('.')
+                {
+                    let is_used =
+                        r_by_name.get(l_symbol.token.text.as_str()).is_some_and(|ranges| {
+                            ranges
+                                .iter()
+                                .any(|&r_range| l_symbol.scope.range.contains_range(r_range))
+                        });
+                    if !is_used {
+                        return Some(Error::new(l_symbol.token.range, Unused));
+                    }
+                }
                 None
-            }
-        })
+            })
+            .collect()
     }
 
     fn error_is_suppressed(&self, e: &Error) -> bool {
@@ -646,18 +675,18 @@ impl Ast {
     }
 
     fn l_symbol_by_r(&self, r_symbol: &models::RSymbol) -> FindLSymbol<'_> {
-        let mut token = r_symbol.token.clone();
-        if let Some(base) = token.text.split('.').next().and_then(|s| s.split(':').next()) {
-            token.text = base.to_string();
-        }
+        let text = r_symbol.token.text.as_str();
+        let base = text.split('.').next().and_then(|s| s.split(':').next()).unwrap_or(text);
         match r_symbol.special {
-            models::SpecialKind::Normal | models::SpecialKind::MacroUnquote => {
-                self.l_symbols.nearest(&token).map_or(FindLSymbol::NotFound, FindLSymbol::Found)
-            }
+            models::SpecialKind::Normal | models::SpecialKind::MacroUnquote => self
+                .l_symbols
+                .nearest_by_name_and_range(base, r_symbol.token.range)
+                .map_or(FindLSymbol::NotFound, FindLSymbol::Found),
             models::SpecialKind::HashArg => FindLSymbol::Skip,
-            models::SpecialKind::MacroWrap => {
-                self.l_symbols.nearest(&token).map_or(FindLSymbol::Skip, FindLSymbol::Found)
-            }
+            models::SpecialKind::MacroWrap => self
+                .l_symbols
+                .nearest_by_name_and_range(base, r_symbol.token.range)
+                .map_or(FindLSymbol::Skip, FindLSymbol::Found),
         }
     }
 

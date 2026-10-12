@@ -33,6 +33,9 @@ impl TestHarness {
     pub fn new() -> Self {
         let std_fnl = include_str!("../../../stubs/lua54.fnl");
         let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
+        let std_globals = crate::precompute_std_globals(&std_ast);
+        let globals_cache = Arc::new(RwLock::new(Arc::clone(&std_globals)));
+        let std_completions = Arc::new(crate::precompute_std_completions(&std_ast));
 
         let (service, _) = tower_lsp::LspService::new(|client| Backend {
             client,
@@ -42,6 +45,9 @@ impl TestHarness {
             workspace_map: DashMap::new(),
             on_save_or_open_errors: DashMap::new(),
             config: Arc::new(RwLock::new(Configuration::default())),
+            std_globals,
+            globals_cache,
+            std_completions,
             std_ast,
             std_uri: Url::parse(STUBS_URI).expect("stubs URI should be valid"),
             client_caps: Arc::new(RwLock::new(ClientCapabilities::default())),
@@ -68,8 +74,8 @@ impl TestHarness {
         };
 
         self.backend.doc_map.insert(uri.clone(), Rope::from_str(content));
-        let globals = self.backend.collect_globals();
-        let ast = fennel_parser::parse(content.chars(), globals);
+        let globals = self.backend.collect_globals_arc();
+        let ast = fennel_parser::parse_shared(content.chars(), globals);
         self.backend.ast_map.insert(uri.clone(), ast);
 
         uri
@@ -89,8 +95,8 @@ impl TestHarness {
         let (_path, url) = self.write_file(rel_path, content);
         self.backend.doc_map.insert(url.clone(), Rope::from_str(content));
         self.backend.open_docs.insert(url.clone());
-        let globals = self.backend.collect_globals();
-        let ast = fennel_parser::parse(content.chars(), globals);
+        let globals = self.backend.collect_globals_arc();
+        let ast = fennel_parser::parse_shared(content.chars(), globals);
         self.backend.ast_map.insert(url.clone(), ast);
         url
     }
@@ -393,7 +399,7 @@ impl TestHarness {
     pub fn get_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
         let doc = self.backend.doc_map.get(uri).expect("doc should exist");
         if crate::is_flsproject(uri) {
-            let ast = fennel_parser::parse(doc.to_string().chars(), self.backend.collect_globals());
+            let ast = fennel_parser::parse_shared(doc.chars(), self.backend.collect_globals_arc());
             self.backend.compute_diagnostics(&doc, uri, &ast, true)
         } else {
             let ast = self.backend.ast_map.get(uri).expect("ast should exist");

@@ -17,7 +17,7 @@ pub(crate) mod test_harness;
 
 use std::{
     collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -54,6 +54,9 @@ struct Backend {
     on_save_or_open_errors: DashMap<Url, Vec<fennel_parser::Error>>,
     std_ast: Ast,
     std_uri: Url,
+    std_globals: Arc<HashSet<String>>,
+    globals_cache: Arc<RwLock<Arc<HashSet<String>>>>,
+    std_completions: Arc<Vec<CompletionItem>>,
     /// Captured from `initialize`; `InitializedParams` carries nothing, so the
     /// client capabilities have to be retained to register file watchers later.
     /// Interior mutability because `initialize` takes `&self`.
@@ -330,8 +333,8 @@ impl Backend {
         self.config.read().map(|c| c.is_lint_enabled(lint)).unwrap_or(true)
     }
 
-    pub(crate) fn collect_globals(&self) -> HashSet<String> {
-        let mut globals = HashSet::new();
+    pub(crate) fn recompute_globals(&self) {
+        let mut globals = (*self.std_globals).clone();
         if let Ok(config) = self.config.read() {
             for global in &config.fennel.diagnostics.globals {
                 globals.insert(global.clone());
@@ -340,17 +343,43 @@ impl Backend {
                 globals.insert(global.to_string());
             }
         }
-        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-        for sym in std_symbols {
-            globals.insert(sym.token.text.clone());
+        if let Ok(mut cache) = self.globals_cache.write() {
+            *cache = Arc::new(globals);
         }
-        globals
+    }
+
+    pub(crate) fn collect_globals_arc(&self) -> Arc<HashSet<String>> {
+        self.globals_cache
+            .read()
+            .map(|c| Arc::clone(&*c))
+            .unwrap_or_else(|_| Arc::clone(&self.std_globals))
+    }
+
+    #[expect(dead_code, reason = "fallback helper for owned globals")]
+    pub(crate) fn collect_globals(&self) -> HashSet<String> {
+        (*self.collect_globals_arc()).clone()
+    }
+
+    pub(crate) async fn ensure_ast(&self, uri: &Url) {
+        if self.ast_map.contains_key(uri) {
+            return;
+        }
+        let Ok(file_path) = uri.to_file_path() else {
+            return;
+        };
+        if let Ok(text) = std::fs::read_to_string(&file_path) {
+            let globals = self.collect_globals_arc();
+            let ast = fennel_parser::parse_shared(text.chars(), globals);
+            let doc = Rope::from_str(&text);
+            self.doc_map.insert(uri.clone(), doc);
+            self.ast_map.insert(uri.clone(), ast);
+        }
     }
 
     pub(crate) async fn index_workspace_folder(&self, folder_uri: &Url) {
         if let Ok(files) = collect_fnl_filepaths(folder_uri.clone()) {
             for f in &files {
-                self.get_or_parse_ast(f).await;
+                self.ensure_ast(f).await;
             }
         }
     }
@@ -468,13 +497,13 @@ impl Backend {
 
         // Nothing to do if the on-disk contents match what we already hold.
         if let Some(cached) = self.doc_map.get(uri)
-            && cached.to_string() == text
+            && cached.value() == text.as_str()
         {
             return false;
         }
 
-        let globals = self.collect_globals();
-        let ast = fennel_parser::parse(text.chars(), globals);
+        let globals = self.collect_globals_arc();
+        let ast = fennel_parser::parse_shared(text.chars(), globals);
         self.ast_map.insert(uri.clone(), ast);
         self.doc_map.insert(uri.clone(), Rope::from_str(&text));
         true
@@ -486,8 +515,8 @@ impl Backend {
         }
         let file_path = uri.to_file_path().ok()?;
         if let Ok(text) = std::fs::read_to_string(&file_path) {
-            let globals = self.collect_globals();
-            let ast = fennel_parser::parse(text.chars(), globals);
+            let globals = self.collect_globals_arc();
+            let ast = fennel_parser::parse_shared(text.chars(), globals);
             self.ast_map.insert(uri.clone(), ast.clone());
 
             let doc = Rope::from_str(&text);
@@ -703,58 +732,59 @@ impl Backend {
                 .is_some_and(|p| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false))
         };
 
-        let resolve_pattern = |base_url: &Url, pattern: &str| -> Option<Url> {
+        let resolve_pattern = |base_path: &Path, pattern: &str| -> Option<Url> {
             if pattern.is_empty() {
                 return None;
             }
             let substituted = pattern.replace('?', mod_str);
-            let sub_path = PathBuf::from(&substituted);
-            if sub_path.is_absolute() {
-                let url = Url::from_file_path(&sub_path).ok()?;
-                if file_exists(&url) {
-                    return Some(url);
-                }
-            } else if let Ok(base_path) = base_url.to_file_path() {
-                let joined = base_path.join(sub_path);
-                let url = Url::from_file_path(joined).ok()?;
-                if file_exists(&url) {
-                    return Some(url);
-                }
+            let sub_path = Path::new(&substituted);
+            let target_path = if sub_path.is_absolute() {
+                sub_path.to_path_buf()
+            } else {
+                base_path.join(sub_path)
+            };
+            if target_path.is_file() {
+                return Url::from_file_path(target_path).ok();
             }
-            None
+            let url = Url::from_file_path(&target_path).ok()?;
+            if self.doc_map.contains_key(&url) { Some(url) } else { None }
         };
 
-        let mut candidate_roots: Vec<Url> = Vec::new();
-        let mut matching_ws: Vec<Url> = self
+        let mut candidate_roots: Vec<(Url, PathBuf)> = Vec::new();
+        let mut matching_ws: Vec<(Url, PathBuf)> = self
             .workspace_map
             .iter()
             .filter(|r| rel.path().starts_with(r.key().path()))
-            .map(|r| r.key().clone())
+            .filter_map(|r| r.key().to_file_path().ok().map(|p| (r.key().clone(), p)))
             .collect();
         if !matching_ws.is_empty() {
             candidate_roots.append(&mut matching_ws);
         } else {
-            candidate_roots.extend(self.workspace_map.iter().map(|r| r.key().clone()));
+            candidate_roots.extend(
+                self.workspace_map
+                    .iter()
+                    .filter_map(|r| r.key().to_file_path().ok().map(|p| (r.key().clone(), p))),
+            );
         }
         if let Ok(rel_path) = rel.to_file_path()
             && let Some(parent) = rel_path.parent()
             && let Ok(parent_url) = Url::from_directory_path(parent)
-            && !candidate_roots.contains(&parent_url)
+            && !candidate_roots.iter().any(|(u, _)| u == &parent_url)
         {
-            candidate_roots.push(parent_url);
+            candidate_roots.push((parent_url, parent.to_path_buf()));
         }
 
-        for root in &candidate_roots {
+        for (_, base_path) in &candidate_roots {
             for pattern in fennel_path.split(';') {
-                if let Some(url) = resolve_pattern(root, pattern) {
+                if let Some(url) = resolve_pattern(base_path, pattern) {
                     return Some(url);
                 }
             }
         }
 
-        for root in &candidate_roots {
+        for (_, base_path) in &candidate_roots {
             for pattern in macro_path.split(';') {
-                if let Some(url) = resolve_pattern(root, pattern) {
+                if let Some(url) = resolve_pattern(base_path, pattern) {
                     return Some(url);
                 }
             }
@@ -877,63 +907,88 @@ impl Backend {
         symbol: &models::LSymbol,
         ast: &Ast,
     ) -> (Option<String>, Option<Documentation>) {
-        if matches!(
-            symbol.scope.kind,
-            models::ScopeKind::Func | models::ScopeKind::Lambda | models::ScopeKind::Macro
-        ) {
-            let root = SyntaxNode::new_root(ast.root.clone());
-            if let Some(token) = root.token_at_offset(symbol.token.range.start()).right_biased()
-                && let Some(func_node) = token.parent_ancestors().find(|n| {
-                    matches!(
-                        n.kind(),
-                        SyntaxKind::N_FN | SyntaxKind::N_LAMBDA | SyntaxKind::N_MACRO
-                    )
-                })
-                && let Some(param_table) =
-                    func_node.children().find(|n| n.kind() == SyntaxKind::N_PARAM_TABLE)
-            {
-                let mut params = Vec::new();
-                for element in param_table.descendants_with_tokens() {
-                    if let Some(t) = element.into_token()
-                        && matches!(t.kind(), SyntaxKind::SYMBOL | SyntaxKind::VARARG)
-                    {
-                        params.push(t.text().to_string());
-                    }
-                }
-                let sig = format!("(fn {} [{}])", symbol.token.text, params.join(" "));
-                let mut doc = ast.docstring(symbol.token.range).map(Documentation::String);
-                if doc.is_none()
-                    && let Some(body) =
-                        func_node.children().find(|n| n.kind() == SyntaxKind::N_BODY)
+        extract_symbol_completion_detail_and_doc(symbol, ast)
+    }
+}
+
+pub(crate) fn extract_symbol_completion_detail_and_doc(
+    symbol: &models::LSymbol,
+    ast: &Ast,
+) -> (Option<String>, Option<Documentation>) {
+    if matches!(
+        symbol.scope.kind,
+        models::ScopeKind::Func | models::ScopeKind::Lambda | models::ScopeKind::Macro
+    ) {
+        let root = SyntaxNode::new_root(ast.root.clone());
+        if let Some(token) = root.token_at_offset(symbol.token.range.start()).right_biased()
+            && let Some(func_node) = token.parent_ancestors().find(|n| {
+                matches!(n.kind(), SyntaxKind::N_FN | SyntaxKind::N_LAMBDA | SyntaxKind::N_MACRO)
+            })
+            && let Some(param_table) =
+                func_node.children().find(|n| n.kind() == SyntaxKind::N_PARAM_TABLE)
+        {
+            let mut params = Vec::new();
+            for element in param_table.descendants_with_tokens() {
+                if let Some(t) = element.into_token()
+                    && matches!(t.kind(), SyntaxKind::SYMBOL | SyntaxKind::VARARG)
                 {
-                    let sexps: Vec<_> =
-                        body.children().filter(|n| n.kind() == SyntaxKind::N_SEXP).collect();
-                    if sexps.len() == 1
-                        && let Some(first_sexp) = sexps.first()
-                    {
-                        for t in first_sexp.descendants_with_tokens() {
-                            if t.kind() == SyntaxKind::QUOTE_STRING {
-                                let text = t.to_string();
-                                let clean = text
-                                    .strip_prefix('"')
-                                    .and_then(|s| s.strip_suffix('"'))
-                                    .unwrap_or(&text);
-                                doc = Some(Documentation::String(clean.to_string()));
-                                break;
-                            }
+                    params.push(t.text().to_string());
+                }
+            }
+            let sig = format!("(fn {} [{}])", symbol.token.text, params.join(" "));
+            let mut doc = ast.docstring(symbol.token.range).map(Documentation::String);
+            if doc.is_none()
+                && let Some(body) = func_node.children().find(|n| n.kind() == SyntaxKind::N_BODY)
+            {
+                let sexps: Vec<_> =
+                    body.children().filter(|n| n.kind() == SyntaxKind::N_SEXP).collect();
+                if sexps.len() == 1
+                    && let Some(first_sexp) = sexps.first()
+                {
+                    for t in first_sexp.descendants_with_tokens() {
+                        if t.kind() == SyntaxKind::QUOTE_STRING {
+                            let text = t.to_string();
+                            let clean = text
+                                .strip_prefix('"')
+                                .and_then(|s| s.strip_suffix('"'))
+                                .unwrap_or(&text);
+                            doc = Some(Documentation::String(clean.to_string()));
+                            break;
                         }
                     }
                 }
-                return (Some(sig), doc);
             }
+            return (Some(sig), doc);
         }
-
-        let vk = view::value_kind(&symbol.value.kind);
-        let detail =
-            if !vk.is_empty() { Some(vk.to_string()) } else { Some(symbol.token.text.clone()) };
-        let doc = ast.docstring(symbol.token.range).map(Documentation::String);
-        (detail, doc)
     }
+
+    let vk = view::value_kind(&symbol.value.kind);
+    let detail =
+        if !vk.is_empty() { Some(vk.to_string()) } else { Some(symbol.token.text.clone()) };
+    let doc = ast.docstring(symbol.token.range).map(Documentation::String);
+    (detail, doc)
+}
+
+pub(crate) fn precompute_std_globals(std_ast: &Ast) -> Arc<HashSet<String>> {
+    let (std_symbols, _, _, _) = std_ast.completion(std_ast.end_offset(), None);
+    Arc::new(std_symbols.map(|sym| sym.token.text.clone()).collect())
+}
+
+pub(crate) fn precompute_std_completions(std_ast: &Ast) -> Vec<CompletionItem> {
+    let (std_symbols, _, _, _) = std_ast.completion(std_ast.end_offset(), None);
+    std_symbols
+        .map(|symbol| {
+            let (detail, documentation) = extract_symbol_completion_detail_and_doc(symbol, std_ast);
+            CompletionItem {
+                label: symbol.token.text.clone(),
+                insert_text: Some(symbol.token.text.clone()),
+                kind: Some(view::completion_scope_kind(symbol.scope.kind)),
+                detail,
+                documentation,
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -953,6 +1008,9 @@ async fn main() {
     let std_fnl = include_str!("../../../stubs/lua54.fnl");
     let std_ast = fennel_parser::parse(std_fnl.chars(), HashSet::new());
     let std_uri = Url::parse(STUBS_URI).expect("hardcoded stubs URI must be valid");
+    let std_globals = precompute_std_globals(&std_ast);
+    let globals_cache = Arc::new(RwLock::new(Arc::clone(&std_globals)));
+    let std_completions = Arc::new(precompute_std_completions(&std_ast));
 
     let doc_map = DashMap::new();
     doc_map.insert(std_uri.clone(), Rope::from_str(std_fnl));
@@ -965,6 +1023,9 @@ async fn main() {
         workspace_map: DashMap::new(),
         on_save_or_open_errors: DashMap::new(),
         config: Arc::new(RwLock::new(config::Configuration::default())),
+        std_globals,
+        globals_cache,
+        std_completions,
         std_ast,
         std_uri,
         client_caps: Arc::new(RwLock::new(ClientCapabilities::default())),

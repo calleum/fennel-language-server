@@ -3,6 +3,8 @@
 //! Part of the `tower_lsp::LanguageServer` impl for `Backend`, split out of
 //! `main.rs` by feature area.
 
+use std::sync::Arc;
+
 use ropey::Rope;
 use tower_lsp::{jsonrpc::Error, lsp_types::*};
 
@@ -73,12 +75,13 @@ impl Backend {
     }
 
     pub(crate) async fn refresh_ast_globals_and_diagnostics(&self) {
-        let globals = self.collect_globals();
+        self.recompute_globals();
+        let globals = self.collect_globals_arc();
         let updated: Vec<Url> = {
             let mut updated = Vec::new();
             for mut r in self.ast_map.iter_mut() {
                 let ast = r.value_mut();
-                ast.update_globals(globals.iter().cloned().collect());
+                ast.update_globals_shared(Arc::clone(&globals));
                 updated.push(r.key().clone());
             }
             updated
@@ -145,7 +148,7 @@ impl Backend {
             let ast = if let Some(ast) = self.ast_map.get(&fls_uri) {
                 ast.clone()
             } else {
-                let ast = fennel_parser::parse(text.chars(), self.collect_globals());
+                let ast = fennel_parser::parse_shared(text.chars(), self.collect_globals_arc());
                 self.ast_map.insert(fls_uri.clone(), ast.clone());
                 ast
             };
@@ -172,8 +175,8 @@ impl Backend {
         self.doc_map.insert(uri.clone(), doc.clone());
         self.open_docs.insert(uri.clone());
 
-        let globals = self.collect_globals();
-        let ast = fennel_parser::parse(text.chars(), globals);
+        let globals = self.collect_globals_arc();
+        let ast = fennel_parser::parse_shared(text.chars(), globals);
         self.publish_diagnostics(&doc, uri.clone(), &ast, Some(version), true).await;
 
         self.on_save_or_open_errors.insert(uri.clone(), ast.on_save_errors().cloned().collect());
@@ -207,9 +210,9 @@ impl Backend {
             }
         });
 
-        let globals = self.collect_globals();
+        let globals = self.collect_globals_arc();
         let (doc_snapshot, ast) = {
-            let ast = fennel_parser::parse(doc.chars(), globals);
+            let ast = fennel_parser::parse_shared(doc.chars(), globals);
             (doc.clone(), ast)
         };
         // `doc` is a write guard on doc_map; release it before awaiting.

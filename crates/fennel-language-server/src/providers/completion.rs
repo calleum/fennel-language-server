@@ -37,19 +37,7 @@ impl Backend {
             }
         });
 
-        let (std_symbols, _, _, _) = self.std_ast.completion(self.std_ast.end_offset(), None);
-        let std_completions = std_symbols.map(|symbol| {
-            let (detail, documentation) =
-                self.symbol_completion_detail_and_doc(symbol, &self.std_ast);
-            CompletionItem {
-                label: symbol.token.text.clone(),
-                insert_text: Some(symbol.token.text.clone()),
-                kind: Some(view::completion_scope_kind(symbol.scope.kind)),
-                detail,
-                documentation,
-                ..Default::default()
-            }
-        });
+        let std_completions = self.std_completions.iter().cloned();
 
         let globals = globals.into_iter().flat_map(|(kind, vec)| {
             vec.into_iter().map(move |word| CompletionItem {
