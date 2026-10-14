@@ -114,11 +114,11 @@ pub enum SpecialKind {
 }
 
 impl LSymbol {
-    pub(crate) fn contains_token(&self, r_symbol: &Token) -> bool {
+    pub fn contains_token(&self, r_symbol: &Token) -> bool {
         self.contains_token_parts(&r_symbol.text, r_symbol.range)
     }
 
-    pub(crate) fn contains_token_parts(&self, r_text: &str, r_range: TextRange) -> bool {
+    pub fn contains_token_parts(&self, r_text: &str, r_range: TextRange) -> bool {
         self.token.text == r_text && self.scope.range.contains_range(r_range)
     }
 }

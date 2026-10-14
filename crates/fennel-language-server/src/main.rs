@@ -7,6 +7,8 @@ mod semantic_tokens;
 mod view;
 
 #[cfg(test)]
+mod benchmarks;
+#[cfg(test)]
 mod property_tests;
 #[cfg(test)]
 mod tdd_helper;
